@@ -48,23 +48,32 @@ The local env file may leave `BIN_EVAL_LLM_API_KEY` empty. The service also load
 
 ## Copy-Paste Curl Sequence
 
+These commands are safe to paste as a block after the local service is running. They use `curl -fsS` so HTTP failures stop the command, while successful responses are written to `debug/live-curl/` for inspection.
+
 Set the local API URL:
 
 ```bash
+# Use the local-only API endpoint unless BIN_EVAL_URL is already set.
 export BIN_EVAL_URL="${BIN_EVAL_URL:-http://127.0.0.1:8080}"
+
+# Keep request and response captures out of the repo; debug/ is ignored.
 mkdir -p debug/live-curl
 ```
 
 Create a checklist from a committed fixture:
 
 ```bash
+# Extract the fields accepted by POST /checklists from the fixture task.
 jq -c '{task, context}' fixtures/smoke/cases/release_notes/task.json > debug/live-curl/create_checklist_payload.json
 
+# Start checklist generation. The API returns 202 with a checklist_id because
+# question generation runs asynchronously in Temporal.
 curl -fsS -X POST "${BIN_EVAL_URL}/checklists" \
   -H 'Content-Type: application/json' \
   --data @debug/live-curl/create_checklist_payload.json \
   -o debug/live-curl/create_checklist.json
 
+# Save the checklist ID for polling and later evaluation.
 checklist_id="$(jq -r '.checklist_id' debug/live-curl/create_checklist.json)"
 printf 'checklist_id=%s\n' "$checklist_id"
 ```
@@ -73,18 +82,23 @@ Poll the checklist until questions and weights are ready:
 
 ```bash
 for attempt in $(seq 1 150); do
+  # Poll the checklist state. It starts as running and finishes as succeeded or failed.
   curl -fsS "${BIN_EVAL_URL}/checklists/${checklist_id}" \
     -o debug/live-curl/checklist.json
 
   status="$(jq -r '.status' debug/live-curl/checklist.json)"
   if [ "$status" = "succeeded" ]; then
+    # On success, the response contains generated binary questions and weights.
     jq '{status, questions, weights}' debug/live-curl/checklist.json
     break
   fi
   if [ "$status" = "failed" ]; then
+    # Print the full failure response before exiting.
     jq . debug/live-curl/checklist.json
     exit 1
   fi
+
+  # Workflows are asynchronous; wait briefly before polling again.
   sleep 2
 done
 ```
@@ -92,16 +106,19 @@ done
 Create an evaluation against that checklist:
 
 ```bash
+# Build the evaluation request from the generated checklist and a model answer.
 jq -n --arg id "$checklist_id" \
   --rawfile answer fixtures/smoke/cases/release_notes/model_answer_good.txt \
   '{checklist_id:$id, model_answer:$answer}' \
   > debug/live-curl/create_evaluation_payload.json
 
+# Start answer evaluation. This also returns 202 because scoring runs async.
 curl -fsS -X POST "${BIN_EVAL_URL}/evaluations" \
   -H 'Content-Type: application/json' \
   --data @debug/live-curl/create_evaluation_payload.json \
   -o debug/live-curl/create_evaluation.json
 
+# Save the evaluation ID for polling the score.
 evaluation_id="$(jq -r '.evaluation_id' debug/live-curl/create_evaluation.json)"
 printf 'evaluation_id=%s\n' "$evaluation_id"
 ```
@@ -110,11 +127,13 @@ Poll the evaluation until score fields are ready:
 
 ```bash
 for attempt in $(seq 1 150); do
+  # Poll the evaluation state until the worker has scored the answer.
   curl -fsS "${BIN_EVAL_URL}/evaluations/${evaluation_id}" \
     -o debug/live-curl/evaluation.json
 
   status="$(jq -r '.status' debug/live-curl/evaluation.json)"
   if [ "$status" = "succeeded" ]; then
+    # These fields are the final binary-checklist score and supporting judgments.
     jq '{
       status,
       satisfied_points,
@@ -126,9 +145,12 @@ for attempt in $(seq 1 150); do
     break
   fi
   if [ "$status" = "failed" ]; then
+    # Print the full failure response before exiting.
     jq . debug/live-curl/evaluation.json
     exit 1
   fi
+
+  # Workflows are asynchronous; wait briefly before polling again.
   sleep 2
 done
 ```

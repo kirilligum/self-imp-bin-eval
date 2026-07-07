@@ -88,13 +88,13 @@ for attempt in (seq 1 150)
   curl -fsS "$BIN_EVAL_URL/checklists/$checklist_id" \
     -o debug/live-curl/checklist.json
 
-  set status (jq -r '.status' debug/live-curl/checklist.json)
-  if test "$status" = succeeded
+  set checklist_state (jq -r '.status' debug/live-curl/checklist.json)
+  if test "$checklist_state" = succeeded
     # On success, the response contains generated binary questions and weights.
     jq '{status, questions, weights}' debug/live-curl/checklist.json
     break
   end
-  if test "$status" = failed
+  if test "$checklist_state" = failed
     # Print the full failure response before exiting.
     jq . debug/live-curl/checklist.json
     exit 1
@@ -133,8 +133,8 @@ for attempt in (seq 1 150)
   curl -fsS "$BIN_EVAL_URL/evaluations/$evaluation_id" \
     -o debug/live-curl/evaluation.json
 
-  set status (jq -r '.status' debug/live-curl/evaluation.json)
-  if test "$status" = succeeded
+  set evaluation_state (jq -r '.status' debug/live-curl/evaluation.json)
+  if test "$evaluation_state" = succeeded
     # These fields are the final binary-checklist score and supporting judgments.
     jq '{
       status,
@@ -146,7 +146,7 @@ for attempt in (seq 1 150)
     }' debug/live-curl/evaluation.json
     break
   end
-  if test "$status" = failed
+  if test "$evaluation_state" = failed
     # Print the full failure response before exiting.
     jq . debug/live-curl/evaluation.json
     exit 1

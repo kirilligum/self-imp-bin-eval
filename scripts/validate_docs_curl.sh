@@ -39,4 +39,8 @@ if rg -n 'Bearer [A-Za-z0-9._-]{20,}|sk-[A-Za-z0-9]' "$DOC" >/dev/null; then
   fail "docs/curl.md appears to contain a secret literal"
 fi
 
+if rg -n 'set status\b' "$DOC" >/dev/null; then
+  fail "docs/curl.md uses Fish read-only variable name: status"
+fi
+
 echo "docs curl contract ok"

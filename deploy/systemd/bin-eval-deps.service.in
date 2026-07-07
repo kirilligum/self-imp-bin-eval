@@ -1,0 +1,20 @@
+[Unit]
+Description=bin-eval local dependency stack
+Documentation=file://{{ROOT_DIR}}/docs/curl.md
+{{DOCKER_UNIT_DEPENDENCIES}}
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory={{ROOT_DIR}}
+EnvironmentFile={{BIN_EVAL_ENV_FILE}}
+ExecStart={{ROOT_DIR}}/scripts/docker-compose-local.sh up -d postgres temporal garage
+ExecStop={{ROOT_DIR}}/scripts/docker-compose-local.sh stop postgres temporal garage
+TimeoutStartSec=240
+TimeoutStopSec=90
+Restart=on-failure
+RestartSec=15
+{{SERVICE_IDENTITY}}
+
+[Install]
+WantedBy={{INSTALL_TARGET}}

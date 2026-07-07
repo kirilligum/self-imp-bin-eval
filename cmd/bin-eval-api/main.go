@@ -4,7 +4,6 @@ import (
 	"context"
 	"log"
 	"net/http"
-	"os"
 
 	"github.com/kirilligum/self-imp-bin-eval/internal/api"
 	"github.com/kirilligum/self-imp-bin-eval/internal/config"
@@ -32,10 +31,6 @@ func main() {
 	}
 	defer temporalClient.Close()
 
-	addr := os.Getenv("BIN_EVAL_LISTEN_ADDR")
-	if addr == "" {
-		addr = ":8080"
-	}
 	handler := api.NewRouter(api.Dependencies{
 		Store: store,
 		Starter: api.TemporalStarter{
@@ -43,8 +38,8 @@ func main() {
 			TaskQueue: cfg.TemporalTaskQ,
 		},
 	})
-	log.Printf("bin-eval-api listening on %s", addr)
-	if err := http.ListenAndServe(addr, handler); err != nil {
+	log.Printf("bin-eval-api listening on %s", cfg.ListenAddr)
+	if err := http.ListenAndServe(cfg.ListenAddr, handler); err != nil {
 		log.Fatal(err)
 	}
 }

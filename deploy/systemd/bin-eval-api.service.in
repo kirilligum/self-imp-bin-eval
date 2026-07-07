@@ -1,0 +1,22 @@
+[Unit]
+Description=bin-eval local HTTP API
+Documentation=file://{{ROOT_DIR}}/docs/curl.md
+Requires=bin-eval-deps.service
+After=bin-eval-deps.service
+
+[Service]
+Type=simple
+WorkingDirectory={{ROOT_DIR}}
+EnvironmentFile={{BIN_EVAL_ENV_FILE}}
+EnvironmentFile=-{{LITELLM_ENV_FILE}}
+Environment=BIN_EVAL_GIT_SHA={{GIT_SHA}}
+ExecStartPre={{ROOT_DIR}}/scripts/wait-for-tcp.sh 127.0.0.1 {{POSTGRES_PORT}} 120
+ExecStartPre={{ROOT_DIR}}/scripts/wait-for-tcp.sh 127.0.0.1 7233 120
+ExecStart={{ROOT_DIR}}/bin/bin-eval-api
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=180
+{{SERVICE_IDENTITY}}
+
+[Install]
+WantedBy={{INSTALL_TARGET}}

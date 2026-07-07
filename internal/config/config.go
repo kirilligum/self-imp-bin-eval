@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"strings"
 )
@@ -21,6 +22,7 @@ var RequiredEnvNames = []string{
 	"BIN_EVAL_LLM_API_KEY",
 	"BIN_EVAL_MODEL_PROFILE",
 	"BIN_EVAL_URL",
+	"BIN_EVAL_LISTEN_ADDR",
 }
 
 type Config struct {
@@ -36,6 +38,7 @@ type Config struct {
 	LLMAPIKey       string
 	ModelProfile    string
 	URL             string
+	ListenAddr      string
 	GitSHA          string
 }
 
@@ -43,6 +46,16 @@ func Load() (Config, error) {
 	var missing []string
 	get := func(name string) string {
 		value := strings.TrimSpace(os.Getenv(name))
+		if value == "" {
+			missing = append(missing, name)
+		}
+		return value
+	}
+	getAlias := func(name, alias string) string {
+		value := strings.TrimSpace(os.Getenv(name))
+		if value == "" || value == "replace-with-local-llm-key" {
+			value = strings.TrimSpace(os.Getenv(alias))
+		}
 		if value == "" {
 			missing = append(missing, name)
 		}
@@ -59,13 +72,17 @@ func Load() (Config, error) {
 		GarageSecretKey: get("BIN_EVAL_GARAGE_SECRET_KEY"),
 		ArtifactBucket:  get("BIN_EVAL_ARTIFACT_BUCKET"),
 		LLMBaseURL:      get("BIN_EVAL_LLM_BASE_URL"),
-		LLMAPIKey:       get("BIN_EVAL_LLM_API_KEY"),
+		LLMAPIKey:       getAlias("BIN_EVAL_LLM_API_KEY", "LITELLM_MASTER_KEY"),
 		ModelProfile:    get("BIN_EVAL_MODEL_PROFILE"),
 		URL:             get("BIN_EVAL_URL"),
+		ListenAddr:      get("BIN_EVAL_LISTEN_ADDR"),
 		GitSHA:          strings.TrimSpace(os.Getenv("BIN_EVAL_GIT_SHA")),
 	}
 	if len(missing) > 0 {
 		return Config{}, fmt.Errorf("missing required environment variables: %s", strings.Join(missing, ", "))
+	}
+	if err := validateListenAddr(cfg.ListenAddr); err != nil {
+		return Config{}, err
 	}
 	return cfg, nil
 }
@@ -99,6 +116,26 @@ func getenvDefault(name, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func validateListenAddr(addr string) error {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("invalid BIN_EVAL_LISTEN_ADDR: %w", err)
+	}
+	if isLocalBindHost(host) || strings.EqualFold(os.Getenv("BIN_EVAL_ALLOW_PUBLIC_BIND"), "true") {
+		return nil
+	}
+	return fmt.Errorf("BIN_EVAL_LISTEN_ADDR must bind localhost unless BIN_EVAL_ALLOW_PUBLIC_BIND=true")
+}
+
+func isLocalBindHost(host string) bool {
+	switch strings.ToLower(strings.Trim(host, "[]")) {
+	case "127.0.0.1", "localhost", "::1":
+		return true
+	default:
+		return false
+	}
 }
 
 func IsMissingEnv(err error) bool {

@@ -7,3 +7,4 @@ bin/
 debug/
 coverage.out
 firebase-debug.log
+deploy/local/bin-eval.env

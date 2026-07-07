@@ -1,6 +1,6 @@
 SHELL := /usr/bin/env bash
 
-.PHONY: lint build test test-integration test-e2e
+.PHONY: lint build test test-integration test-e2e install-local start-local stop-local status-local test-live-curl
 
 lint:
 	@files=$$(find . -name '*.go' -not -path './.git/*'); \
@@ -24,3 +24,17 @@ test-integration:
 test-e2e:
 	scripts/smoke_curl.sh
 
+install-local:
+	scripts/install-local-systemd.sh
+
+start-local:
+	scripts/start-local.sh
+
+stop-local:
+	scripts/stop-local.sh
+
+status-local:
+	scripts/status-local.sh
+
+test-live-curl:
+	scripts/live_curl_example.sh

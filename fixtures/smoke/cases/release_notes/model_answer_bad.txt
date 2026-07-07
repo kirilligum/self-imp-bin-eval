@@ -1,0 +1,2 @@
+The release looks fine. Deploy the service whenever convenient and tell customers there are many exciting improvements. If something goes wrong, restart the server. The pricing page may also need updates.
+

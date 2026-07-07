@@ -1,0 +1,2 @@
+The incident was caused by an expired TLS certificate on the ingest gateway. API writes failed, but reads stayed available. Customer impact lasted from 09:15 to 09:42 UTC. Remediation was to rotate the certificate and restart the gateway. The follow-up is to add certificate-expiry alerting. The database was not the cause.
+

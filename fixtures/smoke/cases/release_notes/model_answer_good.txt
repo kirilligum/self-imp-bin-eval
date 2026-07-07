@@ -1,0 +1,2 @@
+Release 2.1 is ready if the database migrations are applied before the API deploy. The customer-visible change is CSV export support. If the rollout has to be reversed, use `make rollback VERSION=2.0`. After deployment, on-call should monitor the 5xx error rate for 30 minutes. I would not add pricing or billing claims because they are not part of this release.
+

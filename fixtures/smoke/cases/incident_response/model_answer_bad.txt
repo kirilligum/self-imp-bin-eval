@@ -1,0 +1,2 @@
+The outage was probably a database issue. Some requests failed for a while, but the team fixed it by changing infrastructure. We should keep an eye on the system and write a postmortem later.
+

@@ -1,3 +1,9 @@
-firebase-debug.log
 .env
+.env.*
+!.env.example
 .aider*
+
+bin/
+debug/
+coverage.out
+firebase-debug.log

@@ -2,34 +2,39 @@
 
 ## Project Structure & Module Organization
 
-This repository is currently a minimal Git workspace with no committed source tree yet. Keep the top level focused on project metadata and entry points. When implementation code is added, prefer a small, predictable layout:
+This repository is a Go service workspace for `bin-eval`. Keep the top level focused on project metadata, canonical commands, and runtime entry points. The canonical layout is:
 
-- `src/` for application or library code.
-- `tests/` for integration tests and cross-module behavior.
-- `src/**/__tests__/` or adjacent `*.test.*` files for unit tests that belong near a module.
+- `cmd/bin-eval-api/` for the HTTP API binary.
+- `cmd/bin-eval-worker/` for the Temporal worker binary.
+- `internal/` for application packages that are not public API.
+- `migrations/` for Postgres schema migrations.
+- `deploy/compose/` for the local Postgres, Temporal, and Garage dependency stack.
+- `scripts/` for operator and smoke-test scripts.
+- `fixtures/` for committed test and smoke inputs.
 - `docs/` for design notes, setup instructions, and evaluation reports.
-- `assets/` or `fixtures/` for static inputs used by tests.
+- `plans/` for implementation plans.
 
 Avoid committing generated logs such as `firebase-debug.log`; add ignore rules when project tooling is introduced.
 
 ## Build, Test, and Development Commands
 
-No build or test commands are configured yet. Add commands as soon as the first runtime or package manager is chosen, and document them here. Recommended conventions:
+Use one canonical top-level command per task:
 
-- `npm test`, `pnpm test`, or `make test`: run the full test suite.
-- `npm run lint` or `make lint`: run static checks and formatting validation.
-- `npm run build` or `make build`: produce distributable artifacts.
-- `npm run dev` or `make dev`: start a local development server or watcher.
+- `make lint`: run formatting validation and `go vet`.
+- `make build`: compile all Go packages and binaries.
+- `make test`: run unit tests.
+- `make test-integration`: validate the Compose stack and run integration tests.
+- `make test-e2e`: run the curl-based smoke path.
 
 Prefer one canonical command per task so local development and CI stay aligned.
 
 ## Coding Style & Naming Conventions
 
-Use the formatter and linter native to the chosen stack. Until tooling exists, keep files ASCII where practical, use clear module names, and avoid broad utility files. Prefer descriptive names such as `binaryEvaluator`, `runEvaluation`, or `evaluation-result.test.ts` over abbreviations. Keep configuration in explicit files at the repository root.
+Use `gofmt` and `go vet` through `make lint`. Keep files ASCII where practical, use clear package and file names, and avoid broad utility packages. Prefer descriptive names such as `ScoreChecklist`, `BuildActiveChecklist`, or `evaluation_result_test.go` over abbreviations. Keep configuration in explicit files at the repository root or under `deploy/compose/`.
 
 ## Testing Guidelines
 
-Add tests with the first behavior change. Name tests by behavior, not implementation detail, for example `evaluates-valid-binary.test.ts`. Keep fixtures small and checked in under `fixtures/` when they are needed for repeatable evaluations. Tests should be runnable from a single top-level command.
+Add tests with the first behavior change. Name tests by behavior, not implementation detail, for example `score_checklist_test.go` or `validates_binary_judgments_test.go`. Keep fixtures small and checked in under `fixtures/` when they are needed for repeatable evaluations. Unit tests should run with `make test`, integration tests with `make test-integration`, and the smoke path with `make test-e2e`.
 
 ## Commit & Pull Request Guidelines
 

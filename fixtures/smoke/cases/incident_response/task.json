@@ -1,0 +1,5 @@
+{
+  "task": "Evaluate whether an answer gives a useful incident response summary for engineers.",
+  "context": "A strong answer must name the root cause as an expired TLS certificate on the ingest gateway, state that API writes failed while reads stayed available, give the customer impact window as 09:15 to 09:42 UTC, list remediation as certificate rotation plus gateway restart, and include a follow-up to add certificate-expiry alerting. It must not blame the database."
+}
+

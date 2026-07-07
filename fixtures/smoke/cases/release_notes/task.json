@@ -1,0 +1,5 @@
+{
+  "task": "Evaluate whether an answer gives a complete internal release readiness summary.",
+  "context": "A strong answer must mention release version 2.1, state that database migrations must be run before deploying the API, include the rollback command `make rollback VERSION=2.0`, identify the customer-visible change as CSV export support, mention that on-call should monitor 5xx error rate for 30 minutes after deploy, and avoid introducing unrelated pricing or billing claims."
+}
+

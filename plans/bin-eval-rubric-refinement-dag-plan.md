@@ -41,6 +41,9 @@
 - Topic: Current local service work
   - Verdict: DECISION
   - Rationale: The existing local service commands in `Makefile`, scripts in `scripts/`, and LiteLLM contract validation remain useful. This plan changes evaluation logic, not the local runtime shell.
+- Topic: One canonical implementation path
+  - Verdict: DECISION
+  - Rationale: The implementation should delete obsolete weighted-scoring code paths and replace them with the rubric refinement path directly. The runtime should have one current checklist model, one response shape, and one scoring path.
 
 ## 3. PRD / stakeholder and system needs
 
@@ -50,10 +53,10 @@
 - Business goals: Improve evaluation accuracy and diagnosability while retaining the running local service, persistent workflow architecture, and direct curl workflow.
 - Success metrics: Final checklists include dimensions, candidate questions, refinements, and final atomic questions; no final checklist question has a multiplier weight; good smoke answers score high, bad smoke answers score low; `make test-e2e` and `make test-live-curl` return succeeded evaluations with final-question counts and judgment coverage.
 - Scope: LLM schemas and prompts for dimension analysis, per-dimension question generation, refinement assignment, and split generation; evalcore final checklist construction and equal scoring; Temporal DAG fan-out/fan-in workflow; Postgres migration and store updates; API response contract updates; Garage artifact key additions; docs and smoke script updates.
-- Non-goals: Public API exposure, auth, UI, learned calibration, multi-judge voting, category-level score reporting, provider fallback, schema repair prompts, external paper parsing, and public deployment.
+- Non-goals: Public API exposure, auth, UI, learned calibration, multi-judge voting, category-level score reporting, additional model-provider routing, schema repair prompts, external paper parsing, and public deployment.
 - Dependencies: Go toolchain, Temporal Go SDK, Postgres, Garage, Docker Compose, local LiteLLM Responses API at `http://127.0.0.1:4000/v1/responses`, existing Makefile commands, and existing smoke fixtures under `fixtures/smoke/cases/`.
-- Risks: Fan-out can increase LLM calls; dimension count and split count can create too many final questions; prompt changes can lower smoke separation; migrations can break existing local data; API response changes can break curl docs.
-- Assumptions: Existing local service is on `master`; `make lint`, `make build`, `make test`, `make test-integration`, `make test-e2e`, and `make test-live-curl` are available; current code stores candidates in `questions` and weights in `weights`; new implementation can add migrations without preserving production data beyond best-effort compatibility for current local rows.
+- Risks: Fan-out can increase LLM calls; dimension count and split count can create too many final questions; prompt changes can lower smoke separation; migrations can require resetting existing local development data; API response changes can break curl docs.
+- Assumptions: Existing local service is on `master`; `make lint`, `make build`, `make test`, `make test-integration`, `make test-e2e`, and `make test-live-curl` are available; current code stores candidates in `questions` and weights in `weights`; the new implementation replaces that model directly instead of preserving old weighted rows or old response fields.
 
 ## 4. SRS / canonical requirements
 
@@ -95,6 +98,7 @@
 - REQ-042 (nfr): The pipeline remains deterministic after LLM outputs are parsed. Acceptance: Go-owned ID assignment, final question ordering, and scoring are deterministic for fixed LLM outputs.
 - REQ-043 (reliability): Invalid model output is non-retryable and persists failed workflow status. Acceptance: schema and semantic validation errors map to existing non-retryable Temporal errors.
 - REQ-044 (nfr): Local operator commands remain valid. Acceptance: `make status-local`, `make test-live-curl`, and documented Fish curl snippets still work after response updates.
+- REQ-045 (maintainability): The implementation has one canonical rubric-refinement path and no old weighted-scoring path. Acceptance: runtime Go code has no `AssignWeights` activity path, no API response field named `weights`, no old response mode, no call-through layer around old weighted scoring, and no duplicated prompt requirements or final-question scoring logic.
 
 ### Error handling and telemetry expectations
 
@@ -103,6 +107,7 @@
 - Semantic model-output failures remain non-retryable.
 - Logs include prompt name, checklist ID, evaluation ID where applicable, and error class, but do not log raw prompts or answers.
 - Smoke output includes final question count, judgment count, score fields, and failed final question IDs.
+- Obsolete weighted checklist behavior is removed rather than adapted, hidden, or kept behind a mode switch.
 
 ### Architecture diagram
 
@@ -153,21 +158,22 @@ C4-style ASCII representation:
 ## 5. Iterative implementation and test plan
 
 - Phase strategy: introduce new schemas and prompt contracts first, then domain construction/scoring, persistence, workflow activities, API/docs, and full smoke acceptance.
+- Implementation policy: keep one direct path through the system. Delete obsolete weighted-scoring runtime code as the rubric refinement path lands; the final runtime should have one current data model, one response contract, and one scoring implementation.
 - Verification-first controls: every behavior-changing phase starts with failing coverage tagged by `TEST-###`; matching implementation subtasks use the same command.
 - Compute controls: `branch_limits = 2`, `reflection_passes = 1`, `early_stop% = 30`.
-- Standards tailoring note: This plan is standards-informed and does not claim ISO/IEEE/FAA compliance. For safety-critical use, add development assurance level assumptions, independence expectations, review and analysis evidence, structural coverage expectations, tool qualification assumptions, and certification data outputs before treating the plan as safety-critical.
+- Standards tailoring note: This plan borrows traceability and verification ideas from requirements engineering, but it intentionally does not add certification artifacts, extra assurance processes, or parallel code paths outside the local service objective.
 
 ### Risk register
 
 - Risk: Fan-out increases LLM cost and latency. Trigger: final question count or workflow duration exceeds thresholds. Mitigation: bounded dimension, candidate, split, and final-question limits with smoke metrics.
-- Risk: Rubric decomposition creates overlapping dimensions. Trigger: duplicate final questions or weak good/bad separation. Mitigation: refinement assignment can delete duplicates, and follow-up dedupe can be added after metrics.
+- Risk: Rubric decomposition creates overlapping dimensions. Trigger: duplicate final questions or weak good/bad separation. Mitigation: refinement assignment deletes duplicates before final checklist construction; no separate dedupe stage is added in this plan.
 - Risk: API response changes break docs. Trigger: `scripts/validate_docs_curl.sh` or smoke scripts fail. Mitigation: update docs and scripts in the API phase with executable contract coverage.
-- Risk: Existing local data has old weighted checklists. Trigger: migrations encounter rows without dimensions. Mitigation: migration can create compatibility rows or local operators can reset dev data; integration tests document selected behavior.
+- Risk: Existing local data has old weighted checklists. Trigger: migrations encounter rows without dimensions. Mitigation: local development data is reset before applying the new migration; the codebase keeps only the new canonical data model.
 - Risk: Split outputs are less atomic than source questions. Trigger: split validation accepts multi-part questions. Mitigation: prompt requirements and semantic validation reject blank output; later quality evals inspect final question granularity.
 
 ### Suspension/resumption criteria
 
-- Suspend when LiteLLM is unavailable, Temporal tests become nondeterministic, Postgres migration compatibility cannot be decided, or the final API response contract needs an owner decision.
+- Suspend when LiteLLM is unavailable, Temporal tests become nondeterministic, the direct schema replacement cannot be represented cleanly, or the final API response contract needs an owner decision.
 - Resume by recording the decision in the plan or ADR index, then continue from the last phase with all phase tests passing.
 
 ### Phase P00: LLM Contracts Express Rubrics and Refinement Counts
@@ -237,7 +243,7 @@ Phase metrics with estimated value and one-sentence rationale:
 - External interactions: 0 - No live LLM call in this phase.
 - Complexity %: 30 - Several new schemas but no workflow execution.
 - Feature creep %: 10 - Rubrics and splitting are in scope for the redesign.
-- Technical debt %: 8 - Old weight names may remain until later phases.
+- Post-phase cleanup %: 0 - New contracts do not add alternate runtime paths.
 - YAGNI score: 8 - Every schema maps to a target workflow step.
 - MoSCoW: Must.
 - Local/non-local scope: Local.
@@ -257,7 +263,7 @@ Lifecycle evidence:
 - Verification method: TEST-002.
 - Validation purpose: scoring and final checklist construction become deterministic before persistence and workflows.
 - Configuration checkpoint: `phase-p01-evalcore-final-checklist`.
-- Risks and assumptions: existing `Weight` types can remain temporarily but must not drive final scoring after this phase.
+- Risks and assumptions: old `Weight` types and helpers are removed as part of the semantic replacement; final scoring has one equal-count implementation.
 
 Plan-and-Solve subtasks:
 
@@ -271,7 +277,7 @@ Plan-and-Solve subtasks:
   - Command/procedure: `go test ./internal/evalcore -run TestEvalcoreRubricRefinement -count=1`
   - Expected result: Non-zero because final checklist construction and equal scoring are absent.
   - Evidence produced: failing tests with `// TEST-002`.
-  - Stop/escalate condition: Stop if existing public response must keep weighted scoring fields.
+  - Stop/escalate condition: Stop if an owner decision changes the target scoring semantics.
   - Unlocks: P01.S02
 - `P01.S02 Implement final checklist construction and equal scoring`
   - Action: Add evalcore types for dimensions, candidate questions with dimension IDs, refinements, split outputs, and final questions; implement validation and deterministic final question ID assignment; update scoring to count final questions equally.
@@ -283,10 +289,10 @@ Plan-and-Solve subtasks:
   - Command/procedure: `go test ./internal/evalcore -run TestEvalcoreRubricRefinement -count=1`
   - Expected result: Exit 0 with final checklist and scoring tests passing.
   - Evidence produced: evalcore code diff and passing output.
-  - Stop/escalate condition: Stop if old weighted tests cannot be migrated without losing required API fields.
+  - Stop/escalate condition: Stop if existing tests expose a missing new response field that must be represented in the rubric refinement contract.
   - Unlocks: P01.S03
-- `P01.S03 Remove duplicate active-question logic from evalcore`
-  - Action: Refactor validators and scoring to use one final-question coverage helper instead of the previous weight-based active projection.
+- `P01.S03 Delete duplicate active-question logic from evalcore`
+  - Action: Replace validators and scoring with one final-question coverage helper and delete the previous weight-based active projection.
   - Why now: Duplicate coverage maps would make split and score behavior drift.
   - Files/surfaces: `internal/evalcore/active.go`, `internal/evalcore/validate.go`, `internal/evalcore/score.go`.
   - Requirement link: REQ-009, REQ-010, REQ-034, REQ-042.
@@ -295,12 +301,12 @@ Plan-and-Solve subtasks:
   - Command/procedure: `go test ./internal/evalcore -run TestEvalcoreRubricRefinement -count=1`
   - Expected result: Exit 0 with a single shared final-question coverage path.
   - Evidence produced: refactor diff and passing output.
-  - Stop/escalate condition: Stop if old weight-based helper must remain for compatibility and creates ambiguity.
+  - Stop/escalate condition: Stop if deleting the old helper reveals an unmodeled rubric refinement case.
   - Unlocks: Phase exit
 
 Exit gates:
 - Proceed: TEST-002 passes.
-- Escalate: old weighted scoring compatibility is required.
+- Escalate: equal-count final scoring semantics need a product decision.
 - Stop: final scoring cannot be equal-count without API contract changes beyond this plan.
 
 Phase metrics with estimated value and one-sentence rationale:
@@ -310,7 +316,7 @@ Phase metrics with estimated value and one-sentence rationale:
 - External interactions: 0 - Pure Go.
 - Complexity %: 45 - It changes core semantics.
 - Feature creep %: 8 - All changes support final atomic scoring.
-- Technical debt %: 10 - Compatibility wrappers may linger temporarily.
+- Post-phase cleanup %: 0 - This phase deletes the old scoring path instead of wrapping it.
 - YAGNI score: 9 - Final checklist builder is central to the redesign.
 - MoSCoW: Must.
 - Local/non-local scope: Local.
@@ -330,7 +336,7 @@ Lifecycle evidence:
 - Verification method: TEST-003 and TEST-004.
 - Validation purpose: persistence contract supports the new workflow before activity wiring.
 - Configuration checkpoint: `phase-p02-persistence-rubric-refinement`.
-- Risks and assumptions: migration can add tables while leaving old tables available for compatibility.
+- Risks and assumptions: migration replaces the local development data model with the rubric refinement data model; old weighted tables are not kept as runtime inputs.
 
 Plan-and-Solve subtasks:
 
@@ -344,7 +350,7 @@ Plan-and-Solve subtasks:
   - Command/procedure: `go test -tags integration ./internal/db -run TestRubricRefinementPersistence -count=1 -timeout 10m`
   - Expected result: Non-zero because migration and store methods are absent.
   - Evidence produced: failing integration test with `// TEST-003`.
-  - Stop/escalate condition: Stop if migration compatibility for existing local rows needs owner input.
+  - Stop/escalate condition: Stop if local data reset is not acceptable for this development service.
   - Unlocks: P02.S02
 - `P02.S02 Implement rubric refinement persistence`
   - Action: Add migration and store methods for dimensions, candidate questions, refinements, final questions, and full checklist loading; update existing store success paths to persist final questions as the judged question set.
@@ -371,7 +377,7 @@ Plan-and-Solve subtasks:
   - Stop/escalate condition: Stop if artifact path naming conflicts with existing keys.
   - Unlocks: P02.S04
 - `P02.S04 Implement new Garage artifact keys`
-  - Action: Add prompt constants and key builders for all new LLM prompt families while preserving existing judging key paths where compatible.
+  - Action: Add prompt constants and key builders for all LLM prompt families used by the rubric refinement pipeline, with one canonical key builder per prompt family.
   - Why now: Activity code will write raw request and response payloads through these helpers.
   - Files/surfaces: `internal/artifacts/keys.go`.
   - Requirement link: REQ-022, REQ-035, REQ-041.
@@ -380,10 +386,10 @@ Plan-and-Solve subtasks:
   - Command/procedure: `go test -tags integration ./internal/artifacts -run TestRubricRefinementArtifactKeys -count=1 -timeout 10m`
   - Expected result: Exit 0 with deterministic key assertions passing.
   - Evidence produced: artifact key code diff and passing output.
-  - Stop/escalate condition: Stop if path format needs cross-service compatibility input.
+  - Stop/escalate condition: Stop if artifact key ownership is ambiguous.
   - Unlocks: P02.S05
 - `P02.S05 Confirm persistence helpers need no refactor`
-  - Action: Inspect store and artifact helpers for duplicated SQL row mapping or path concatenation and extract small helpers where repeated logic appears.
+  - Action: Inspect store and artifact helpers for duplicated SQL row mapping or path concatenation and extract small shared helpers where repeated logic appears.
   - Why now: Repeated persistence code would make later workflow changes brittle.
   - Files/surfaces: `internal/db/store.go`, `internal/artifacts/keys.go`.
   - Requirement link: REQ-030, REQ-035, REQ-042.
@@ -392,12 +398,12 @@ Plan-and-Solve subtasks:
   - Command/procedure: `go test -tags integration ./internal/db -run TestRubricRefinementPersistence -count=1 -timeout 10m`; `go test -tags integration ./internal/artifacts -run TestRubricRefinementArtifactKeys -count=1 -timeout 10m`
   - Expected result: Exit 0 with no duplicated key or row-mapping blocks left in the touched code.
   - Evidence produced: refactor diff or execution log note.
-  - Stop/escalate condition: Stop if helper extraction would alter established store contracts outside this feature.
+  - Stop/escalate condition: Stop if a helper would need to support more than the rubric refinement contract.
   - Unlocks: Phase exit
 
 Exit gates:
 - Proceed: TEST-003 and TEST-004 pass.
-- Escalate: migration compatibility or artifact naming is ambiguous.
+- Escalate: direct schema replacement or artifact naming is ambiguous.
 - Stop: persistence cannot represent final-question traceability.
 
 Phase metrics with estimated value and one-sentence rationale:
@@ -407,7 +413,7 @@ Phase metrics with estimated value and one-sentence rationale:
 - External interactions: 3 - Postgres, Garage, Docker Compose.
 - Complexity %: 55 - Data model changes touch integration paths.
 - Feature creep %: 12 - Traceability tables are required by the new design.
-- Technical debt %: 12 - Compatibility handling may add temporary branches.
+- Post-phase cleanup %: 0 - Persistence has one current schema path and one artifact-key path.
 - YAGNI score: 8 - Persisted traceability is useful for every evaluation.
 - MoSCoW: Must.
 - Local/non-local scope: Local.
@@ -479,22 +485,22 @@ Plan-and-Solve subtasks:
   - Evidence produced: workflow code diff and passing output.
   - Stop/escalate condition: Stop if fan-out causes nondeterministic ordering in workflow replay.
   - Unlocks: P03.S05
-- `P03.S05 Remove obsolete weighted workflow assumptions`
-  - Action: Refactor touched workflow and activity code so old `AssignWeights` names are replaced or wrapped by refinement terminology, and no path scores directly from refinement counts.
+- `P03.S05 Delete obsolete weighted workflow assumptions`
+  - Action: Delete the old `AssignWeights` activity path, replace workflow terminology with refinement terminology, and keep final scoring unreachable from refinement counts.
   - Why now: Mixed terminology would hide semantic bugs.
   - Files/surfaces: `internal/activities/llm.go`, `internal/workflows/create_checklist.go`, `internal/workflows/evaluate_answer.go`.
   - Requirement link: REQ-007, REQ-009, REQ-010, REQ-034, REQ-042.
   - Verification link: TEST-005, TEST-006.
   - Verification mode: REFACTOR.
   - Command/procedure: `go test ./internal/activities -run TestRubricRefinementActivities -count=1`; `go test ./internal/workflows -run TestRubricRefinementWorkflows -count=1`
-  - Expected result: Exit 0 with refinement terminology in all changed workflow surfaces.
+  - Expected result: Exit 0 with refinement terminology in all changed workflow surfaces and no runtime `AssignWeights` path.
   - Evidence produced: refactor diff and passing output.
-  - Stop/escalate condition: Stop if public response compatibility requires retaining `weights` in outward-facing structs.
+  - Stop/escalate condition: Stop if a required field cannot be represented without reintroducing weighted scoring.
   - Unlocks: Phase exit
 
 Exit gates:
 - Proceed: TEST-005 and TEST-006 pass.
-- Escalate: workflow ordering or terminology compatibility is ambiguous.
+- Escalate: workflow ordering or canonical terminology is ambiguous.
 - Stop: Temporal fan-out cannot be implemented deterministically.
 
 Phase metrics with estimated value and one-sentence rationale:
@@ -504,7 +510,7 @@ Phase metrics with estimated value and one-sentence rationale:
 - External interactions: 1 - Temporal testsuite.
 - Complexity %: 70 - This is the core architecture change.
 - Feature creep %: 15 - Dimensions and splitting are the agreed product change.
-- Technical debt %: 15 - Some old names may require transitional wrappers.
+- Post-phase cleanup %: 0 - Obsolete workflow names and activity paths are deleted.
 - YAGNI score: 8 - Each activity corresponds to a required pipeline step.
 - MoSCoW: Must.
 - Local/non-local scope: Local.
@@ -514,7 +520,7 @@ Phase metrics with estimated value and one-sentence rationale:
 
 Phase goal: API responses, docs, and smoke scripts expose dimensions, refinements, final questions, and equal-count scores through the existing route surface.
 
-Scope and objectives, including impacted `REQ-###`: REQ-011, REQ-012, REQ-020, REQ-021, REQ-044.
+Scope and objectives, including impacted `REQ-###`: REQ-011, REQ-012, REQ-020, REQ-021, REQ-044, REQ-045.
 
 Impacted surfaces: `internal/api/router.go`, `internal/api/api_test.go`, `scripts/smoke_curl.sh`, `scripts/live_curl_example.sh`, `scripts/validate_docs_curl.sh`, `docs/curl.md`.
 
@@ -524,7 +530,7 @@ Lifecycle evidence:
 - Verification method: TEST-007, TEST-008, EVAL-001, EVAL-002.
 - Validation purpose: external operator behavior matches new scoring semantics.
 - Configuration checkpoint: `phase-p04-api-docs-curl`.
-- Risks and assumptions: clients accept response additions and `weights` can be removed or replaced by `refinements` for new checklists.
+- Risks and assumptions: clients consume the rubric refinement response contract; `weights` is removed from succeeded checklist responses, and `refinements` plus final `questions` are the current contract.
 
 Plan-and-Solve subtasks:
 
@@ -532,7 +538,7 @@ Plan-and-Solve subtasks:
   - Action: Add `// TEST-007` API tests for checklist success responses containing dimensions, candidate questions, refinements, and final questions; add evaluation success tests for equal-count score fields.
   - Why now: API response shape must be pinned before script and docs changes.
   - Files/surfaces: `internal/api/api_test.go`.
-  - Requirement link: REQ-011, REQ-020, REQ-021.
+  - Requirement link: REQ-011, REQ-020, REQ-021, REQ-045.
   - Verification link: TEST-007.
   - Verification mode: RED.
   - Command/procedure: `go test ./internal/api -run TestRubricRefinementAPIResponses -count=1`
@@ -544,13 +550,13 @@ Plan-and-Solve subtasks:
   - Action: Update router response structs and store mapping so succeeded checklists return dimensions, candidate questions, refinements, and final questions; update succeeded evaluations to report equal-count score fields.
   - Why now: Docs and smoke scripts need the new response contract.
   - Files/surfaces: `internal/api/router.go`, `internal/db/store.go`.
-  - Requirement link: REQ-011, REQ-020, REQ-021.
+  - Requirement link: REQ-011, REQ-020, REQ-021, REQ-045.
   - Verification link: TEST-007.
   - Verification mode: GREEN.
   - Command/procedure: `go test ./internal/api -run TestRubricRefinementAPIResponses -count=1`
   - Expected result: Exit 0 with API response tests passing.
   - Evidence produced: API/store diff and passing output.
-  - Stop/escalate condition: Stop if old clients require a compatibility response mode.
+  - Stop/escalate condition: Stop if the new response contract is missing required rubric refinement data.
   - Unlocks: P04.S03
 - `P04.S03 Add failing coverage for updated curl docs and scripts`
   - Action: Update `scripts/validate_docs_curl.sh` with traceability shell comments for `TEST-008` assertions covering dimensions, refinements, final question count, and equal-count score fields in docs and scripts.
@@ -562,7 +568,7 @@ Plan-and-Solve subtasks:
   - Command/procedure: `bash scripts/validate_docs_curl.sh`
   - Expected result: Non-zero because docs and scripts still show old `weights` flow.
   - Evidence produced: failing docs validator update with `# TEST-008`.
-  - Stop/escalate condition: Stop if docs should keep an old weighted example.
+  - Stop/escalate condition: Stop if a required curl example cannot be expressed with the new rubric refinement response.
   - Unlocks: P04.S04
 - `P04.S04 Implement updated curl docs and scripts`
   - Action: Update `docs/curl.md`, `scripts/smoke_curl.sh`, and `scripts/live_curl_example.sh` to parse and print dimensions, refinements, final question count, score fields, and judgment count.
@@ -603,7 +609,7 @@ Plan-and-Solve subtasks:
 
 Exit gates:
 - Proceed: TEST-007, TEST-008, EVAL-001, and EVAL-002 pass.
-- Escalate: response compatibility or quality thresholds need revision.
+- Escalate: response contract or quality thresholds need revision.
 - Stop: curl workflow cannot show the new contract through existing routes.
 
 Phase metrics with estimated value and one-sentence rationale:
@@ -613,7 +619,7 @@ Phase metrics with estimated value and one-sentence rationale:
 - External interactions: 5 - API, worker, Temporal, Garage, LiteLLM.
 - Complexity %: 60 - This is the first full-system behavior measurement.
 - Feature creep %: 10 - Script output changes follow the new contract.
-- Technical debt %: 10 - Compatibility decisions can add response clutter.
+- Post-phase cleanup %: 0 - API responses expose only the new canonical contract.
 - YAGNI score: 8 - Operator evidence is required for deployment confidence.
 - MoSCoW: Must.
 - Local/non-local scope: Local.
@@ -623,7 +629,7 @@ Phase metrics with estimated value and one-sentence rationale:
 
 Phase goal: The complete repo passes canonical commands and the rubric refinement implementation is ready for commit and push.
 
-Scope and objectives, including impacted `REQ-###`: REQ-001 through REQ-012, REQ-020 through REQ-023, REQ-030 through REQ-035, REQ-040 through REQ-044.
+Scope and objectives, including impacted `REQ-###`: REQ-001 through REQ-012, REQ-020 through REQ-023, REQ-030 through REQ-035, REQ-040 through REQ-045.
 
 Impacted surfaces: full repository, local services, git state.
 
@@ -641,7 +647,7 @@ Plan-and-Solve subtasks:
   - Action: Execute the canonical static, build, and unit command.
   - Why now: Focused tests are green; full package coverage must pass before integration.
   - Files/surfaces: all Go packages and `Makefile`.
-  - Requirement link: REQ-001 through REQ-012, REQ-020 through REQ-023, REQ-030 through REQ-035, REQ-040 through REQ-044.
+  - Requirement link: REQ-001 through REQ-012, REQ-020 through REQ-023, REQ-030 through REQ-035, REQ-040 through REQ-045.
   - Verification link: TEST-009.
   - Verification mode: VERIFY.
   - Command/procedure: `make lint build test`
@@ -710,7 +716,7 @@ Phase metrics with estimated value and one-sentence rationale:
 - External interactions: 5 - Postgres, Garage, Temporal, LiteLLM, systemd/user services.
 - Complexity %: 35 - Verification-heavy phase with little new implementation.
 - Feature creep %: 0 - No new product behavior.
-- Technical debt %: 5 - Remaining debt is captured in ADRs.
+- Post-phase cleanup %: 0 - Final acceptance requires no planned alternate branches or obsolete scoring paths.
 - YAGNI score: 10 - Final verification is required for release.
 - MoSCoW: Must.
 - Local/non-local scope: Local.
@@ -864,12 +870,12 @@ evals:
 - id: TEST-007
   - name: Rubric refinement API responses
   - type: unit
-  - verifies: REQ-011, REQ-020, REQ-021
+  - verifies: REQ-011, REQ-020, REQ-021, REQ-045
   - location: `internal/api/api_test.go`
   - command: `go test ./internal/api -run TestRubricRefinementAPIResponses -count=1`
   - fixtures/mocks/data: fake store and fake Temporal starter returning succeeded checklist/evaluation data.
   - deterministic controls: in-memory fakes and fixed IDs.
-  - pass_criteria: succeeded checklist response contains dimensions, candidate_questions, refinements, and final questions; evaluation score fields reflect equal-count scoring.
+  - pass_criteria: succeeded checklist response contains dimensions, candidate_questions, refinements, and final questions; succeeded checklist response omits `weights`; evaluation score fields reflect equal-count scoring.
   - expected_runtime: <10s
 - id: TEST-008
   - name: Rubric refinement docs and curl scripts
@@ -884,12 +890,12 @@ evals:
 - id: TEST-009
   - name: Full static and unit regression
   - type: unit
-  - verifies: REQ-001, REQ-002, REQ-003, REQ-004, REQ-005, REQ-006, REQ-007, REQ-008, REQ-009, REQ-010, REQ-011, REQ-012, REQ-020, REQ-021, REQ-022, REQ-023, REQ-040, REQ-041, REQ-042, REQ-043, REQ-044
+  - verifies: REQ-001, REQ-002, REQ-003, REQ-004, REQ-005, REQ-006, REQ-007, REQ-008, REQ-009, REQ-010, REQ-011, REQ-012, REQ-020, REQ-021, REQ-022, REQ-023, REQ-040, REQ-041, REQ-042, REQ-043, REQ-044, REQ-045
   - location: `Makefile`
   - command: `make lint build test`
   - fixtures/mocks/data: all Go unit fixtures and package fakes.
   - deterministic controls: no live LLM dependency in unit packages.
-  - pass_criteria: formatting validation, `go vet`, build, and unit test packages exit 0.
+  - pass_criteria: formatting validation, `go vet`, build, and unit test packages exit 0; focused static assertions find no runtime `AssignWeights` path, no API `weights` field, no old response mode, and no duplicated question requirements or final scoring helpers.
   - expected_runtime: <3m
 - id: TEST-010
   - name: Full integration regression
@@ -990,6 +996,8 @@ Privacy/data quality constraints:
 | P01 | REQ-042 | TEST-002 | `internal/evalcore/refinement_test.go`, `internal/evalcore/score_test.go` | `go test ./internal/evalcore -run TestEvalcoreRubricRefinement -count=1` |
 | P03 | REQ-043 | TEST-005 | `internal/activities/llm_test.go` | `go test ./internal/activities -run TestRubricRefinementActivities -count=1` |
 | P05 | REQ-044 | TEST-011 | `.git` | `git status --short --branch && git log --oneline -1` |
+| P04 | REQ-045 | TEST-007 | `internal/api/api_test.go` | `go test ./internal/api -run TestRubricRefinementAPIResponses -count=1` |
+| P05 | REQ-045 | TEST-009 | `Makefile` | `make lint build test` |
 
 ## 11. Execution log template
 
@@ -1056,3 +1064,4 @@ Privacy/data quality constraints:
 - ADR-006: Bound fan-out and final question counts through validation.
 - ADR-007: Store raw prompt payloads in Garage for every new LLM prompt family.
 - ADR-008: Preserve local service commands and LiteLLM Responses API contract.
+- ADR-009: Use one canonical rubric refinement path with no old weighted-scoring layer.

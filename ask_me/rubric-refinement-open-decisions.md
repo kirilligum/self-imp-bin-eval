@@ -4,18 +4,18 @@ This document reformats the clarifying questions from the preceding conversation
 
 Decision status:
 
-- Decided: 1B, 3A with `max_final_questions=64`, 4A, 5B, 6A, 7A, 8A, 9A.
-- Still open: Question 2. More context was requested before selecting 2A or 2B.
+- Decided: 1B, 2B, 3A with scaled defaults `6/8/4/64`, 4A, 5B, 6A, 7A, 8A, 9A.
+- Still open: None.
 
 Terminology used below:
 
-- **Rubric refinement path**: the new checklist creation path described in `plans/bin-eval-rubric-refinement-dag-plan.md`, centered on `AnalyzeDimensions`, `GenerateQuestionsForDimension`, `AssignRefinements`, `SplitQuestion`, `BuildFinalChecklist`, and equal-count `ScoreChecklist`.
-- **Refinement count**: the replacement for current weight semantics. `0` deletes a candidate question, `1` keeps it as one final question, and `2..4` means the candidate must be split into that many final questions.
-- **Final question**: the atomic binary question judged during evaluation. Final questions, not candidate questions or refinement counts, are the source of truth for scoring.
+- **Rubric refinement path**: the new checklist creation path described in `plans/bin-eval-rubric-refinement-dag-plan.md`, centered on `AnalyzeDimensions`, `GenerateQuestionsForDimension`, `AssignWeights`, `SplitQuestion`, `BuildFinalChecklist`, and equal-count `ScoreChecklist`.
+- **Diagnostic weight**: the replacement for current scoring-multiplier weight semantics. `0` deletes a candidate question, `1` keeps it as one final question, and `2..4` means the candidate must be split into that many final questions. It is returned for diagnostics and is not used as a score multiplier.
+- **Final question**: the atomic binary question judged during evaluation. Final questions, not candidate questions or diagnostic weights, are the source of truth for scoring.
 - **Old weighted path**: current behavior where question weights are used as point multipliers in scoring. The updated plan says to delete this runtime path rather than wrap it.
 - **Local data reset**: resetting local Postgres data created by the development Compose stack so the new schema can be the only runtime data model.
 - **LiteLLM profile**: the local OpenAI-compatible LiteLLM configuration used by the service through the existing LLM client and environment variables.
-- **Checklist contract**: the JSON shape returned by `GET /checklists/{id}` for callers and curl scripts. In current code this is `checklistResponse` in `internal/api/router.go`, populated from `db.Checklist` in `internal/db/store.go`.
+- **Checklist contract**: the JSON shape returned by `GET /checklists/{id}` for callers and curl scripts. In current code this is `checklistResponse` in `internal/api/router.go`, populated from `db.Checklist` in `internal/db/store.go`. In the new pipeline it is the full persisted checklist audit object: dimensions, candidate questions, diagnostic weights, and final binary questions.
 
 ### 1.1 Question
 
@@ -23,7 +23,7 @@ Can implementation reset existing local Postgres checklist/evaluation data, or m
 
 ### 1.2 Context & clarification
 
-The plan now requires one current data model and no old weighted-scoring compatibility path. Current local data may contain checklist rows shaped around candidate questions plus `weights`. The new model persists dimensions, candidate questions, refinements, final questions, evaluations, and judgments. This affects migration work in `migrations/`, store code in `internal/db/store.go`, and integration tests in `internal/db/db_integration_test.go`.
+The plan now requires one current data model and no old weighted-scoring compatibility path. Current local data may contain checklist rows shaped around candidate questions plus scoring-multiplier `weights`. The new model persists dimensions, candidate questions, diagnostic weights, final questions, evaluations, and judgments. This affects migration work in `migrations/`, store code in `internal/db/store.go`, and integration tests in `internal/db/db_integration_test.go`.
 
 ### 1.3 Options
 
@@ -52,7 +52,7 @@ Decision: **Selected Option B**. Existing local Postgres checklist/evaluation da
 
 ### 2.1 Question
 
-Should successful API responses fully remove `weights` and expose `refinements` plus final `questions` as the only checklist contract?
+Should successful API responses keep `weights` as diagnostics while still scoring only final binary questions?
 
 ### 2.2 Context & clarification
 
@@ -68,9 +68,11 @@ type checklistResponse struct {
 }
 ```
 
-The `weights` field is populated in `getChecklist` from `db.Checklist.Weights`. That store field is loaded from the current `weights` table in `internal/db/store.go`. Removing `weights` means removing this field from the successful `GET /checklists/{id}` JSON response, replacing the store-side state behind it with `question_refinements`, and exposing `refinements` plus final `questions` instead.
+The `weights` field is populated in `getChecklist` from `db.Checklist.Weights`. That store field is loaded from the current `weights` table in `internal/db/store.go`. The important correction is that we should keep this information because it explains why candidates were deleted, kept, or split. The old scoring-multiplier meaning is removed, but the new diagnostic meaning remains.
 
 This is what "checklist contract" means here: the response contract for a succeeded checklist returned to curl/API callers. It does not mean the four HTTP routes change. `POST /checklists`, `GET /checklists/{id}`, `POST /evaluations`, and `GET /evaluations/{id}` stay the same; the succeeded checklist response body changes.
+
+The checklist itself is the persisted evaluation artifact produced by checklist creation. In the target DAG, raw candidate questions appear after per-dimension question generation, diagnostic weights appear after the weight-assignment prompt, and the final binary question list appears after split generation plus deterministic final checklist assembly. The final binary questions are what evaluation judges and scoring use.
 
 ### 2.3 Options
 
@@ -82,9 +84,17 @@ This is what "checklist contract" means here: the response contract for a succee
   - **SSoT**: Final questions and refinements are the only public structured checklist state.
   - **System limits**: Unknown - not available in local context.
   - **Trade-offs**: Cleanest implementation; any external caller expecting `weights` must update now.
-- `Option B`: Explicit versioned route for a new contract
+- `Option B`: Keep diagnostic weights as the only assignment output
+  - **Rubrics**: `Conf:85% | Invest:i | Blast:i | Reversal:i | Fit:i | Reuse:i | Obs:i | Surface:i | Perf:na`
+  - **Approach**: Keep the `weights` response field, redefine each weight as diagnostic assignment data, and do not expose a duplicate `refinements` array.
+  - **Example**: `GET /checklists/{id}` returns `dimensions`, `candidate_questions`, `weights`, and final `questions`; each weight has the candidate ID, integer weight, and rationale. Scoring ignores weights and counts final question judgments equally.
+  - **Architecture**: Maximizes LLM/debug visibility without adding a second route or a duplicated response field.
+  - **SSoT**: Diagnostic weights are the single assignment record; final questions and judgments are the scoring source of truth.
+  - **System limits**: Unknown - not available in local context.
+  - **Trade-offs**: The word `weight` remains overloaded historically, so docs and tests must state that it is diagnostic only.
+- `Option C`: Explicit versioned route for a new contract
   - **Rubrics**: `Conf:50% | Invest:ii | Blast:ii | Reversal:ii | Fit:ii | Reuse:ii | Obs:ii | Surface:ii | Perf:na`
-  - **Approach**: Add a new explicit route namespace for the rubric refinement contract only if an existing external caller must keep old responses.
+  - **Approach**: Add a new explicit route namespace only if an existing external caller must keep old scoring-multiplier responses.
   - **Example**: Keep current four routes for current work only if required, and add `/v2/checklists/{id}` for the rubric contract.
   - **Architecture**: Creates a clearer public API transition if external clients exist, but the current project plan says public API compatibility is out of scope.
   - **SSoT**: The rubric refinement schema remains the application source of truth; route versioning only changes presentation.
@@ -93,9 +103,9 @@ This is what "checklist contract" means here: the response contract for a succee
 
 ### 2.4 Recommendation
 
-I recommend **Option A**. The repository is being driven as a local service and curl workflow, and the user preference is explicit: no legacy, no fallback paths, and no duplicate contracts.
+I recommend **Option B** after your correction. Keeping weights gives the LLM and operator more diagnostic information, while avoiding duplicate assignment data by not returning a separate `refinements` array with the same contents.
 
-Decision: **Open**. More context was requested before choosing whether to remove `weights` from `GET /checklists/{id}` now.
+Decision: **Selected Option B**. Keep `weights` in `GET /checklists/{id}` as diagnostic weight-assignment output. Do not use weights as scoring multipliers, and do not return a duplicate `refinements` field.
 
 ### 3.1 Question
 
@@ -107,59 +117,61 @@ Fan-out limits bound LLM cost, Temporal activity count, persisted rows, and chec
 
 ### 3.3 Options
 
-- `Option A`: Balanced central limits with a 64-question ceiling
+- `Option A`: Scaled central limits with a 64-question ceiling
   - **Rubrics**: `Conf:70% | Invest:i | Blast:i | Reversal:ii | Fit:i | Reuse:i | Obs:i | Surface:i | Perf:i`
-  - **Approach**: Define one central limit struct with defaults `max_dimensions=4`, `max_candidates_per_dimension=6`, `max_split_count=4`, and `max_final_questions=64`; load overrides from one config source so limits can be adjusted after diagnostics show real limit pressure.
-  - **Example**: `evalcore.ChecklistLimits{MaxDimensions:4, MaxCandidatesPerDimension:6, MaxSplitCount:4, MaxFinalQuestions:64}`.
+  - **Approach**: Define one central limit struct with defaults `max_dimensions=6`, `max_candidates_per_dimension=8`, `max_split_count=4`, and `max_final_questions=64`; load overrides from one config source so limits can be adjusted after diagnostics show real limit pressure.
+  - **Example**: `evalcore.ChecklistLimits{MaxDimensions:6, MaxCandidatesPerDimension:8, MaxSplitCount:4, MaxFinalQuestions:64}`.
   - **Architecture**: Centralized limits keep schema, validation, workflow behavior, logs, and smoke diagnostics aligned.
   - **SSoT**: `internal/evalcore` owns the canonical limit struct and validation; `internal/config` owns configured values; LLM schemas and workflows consume those values or mirrored constants tested against them.
-  - **System limits**: defaults are `max_dimensions=4`, `max_candidates_per_dimension=6`, `max_split_count=4`, `max_final_questions=64`.
-  - **Trade-offs**: Higher coverage budget with bounded fan-out; diagnostics are required so the limit can be tuned when hit.
+  - **System limits**: defaults are `max_dimensions=6`, `max_candidates_per_dimension=8`, `max_split_count=4`, `max_final_questions=64`.
+  - **Trade-offs**: Higher coverage budget with bounded fan-out; `max_split_count` stays 4 because the user-facing weight scale remains 0..4.
 - `Option B`: Conservative MVP limits
   - **Rubrics**: `Conf:70% | Invest:ii | Blast:ii | Reversal:iii | Fit:ii | Reuse:ii | Obs:ii | Surface:i | Perf:ii`
   - **Approach**: Use smaller limits: `max_dimensions=3`, `max_candidates_per_dimension=4`, `max_split_count=3`, and `max_final_questions=16`.
-  - **Example**: A checklist can create at most 12 candidates before refinement and 16 final questions after splitting.
+  - **Example**: A checklist can create at most 12 candidates before weighting and 16 final questions after splitting.
   - **Architecture**: Same central-code shape as Option A, with smaller budgets.
   - **SSoT**: One evalcore-owned limit definition.
   - **System limits**: `max_dimensions=3`, `max_candidates_per_dimension=4`, `max_split_count=3`, `max_final_questions=16`.
   - **Trade-offs**: Lower cost and faster smoke tests, but may under-cover complex tasks.
 - `Option C`: Larger coverage limits
   - **Rubrics**: `Conf:50% | Invest:iii | Blast:iii | Reversal:i | Fit:iii | Reuse:iii | Obs:iii | Surface:i | Perf:iii`
-  - **Approach**: Use larger limits: `max_dimensions=5`, `max_candidates_per_dimension=8`, `max_split_count=4`, and `max_final_questions=96`.
+  - **Approach**: Use larger limits: `max_dimensions=8`, `max_candidates_per_dimension=10`, `max_split_count=4`, and `max_final_questions=96`.
   - **Example**: A complex task can produce broader rubric coverage before the final budget stops the workflow.
   - **Architecture**: Same centralized limit implementation, with higher activity and row counts.
   - **SSoT**: One evalcore-owned limit definition.
-  - **System limits**: `max_dimensions=5`, `max_candidates_per_dimension=8`, `max_split_count=4`, `max_final_questions=96`.
+  - **System limits**: `max_dimensions=8`, `max_candidates_per_dimension=10`, `max_split_count=4`, `max_final_questions=96`.
   - **Trade-offs**: Better coverage for large tasks, more LLM calls, slower local curl path.
 
 ### 3.4 Recommendation
 
 I recommend **Option A**. It is the best balance for a local MVP: bounded enough to keep curl usable, large enough to make binary scoring more meaningful.
 
-Decision: **Selected Option A with `max_final_questions=64`**. The implementation should record limit diagnostics whenever validation rejects output for exceeding a limit, including `limit_name`, `configured_limit`, `observed_count`, `checklist_id`, and prompt/workflow stage where available. Limits should be adjustable through one config path after diagnostics show which limit is binding.
+Decision: **Selected Option A with scaled defaults `6/8/4/64`**. The implementation should record limit diagnostics whenever validation rejects output for exceeding a limit, including `limit_name`, `configured_limit`, `observed_count`, `checklist_id`, and prompt/workflow stage where available. Limits should be adjustable through one config path after diagnostics show which limit is binding. The other limits were scaled with the 64-question cap: dimensions move from 4 to 6, candidates per dimension move from 6 to 8, split count remains 4 because that is the diagnostic weight scale.
 
 ### 4.1 Question
 
-Should semantically invalid model output fail the workflow immediately, with no repair prompt?
+Should structurally invalid model output fail the workflow immediately, with no prompt-specific repair loop?
 
 ### 4.2 Context & clarification
 
-Semantic validation means deterministic Go checks over parsed structured output. It is not an extra LLM call and not regex-based natural-language judging. JSON schema checks shape; Go checks cross-field and cross-object invariants that schema cannot fully express: every candidate has one refinement, split counts match exactly, no unknown IDs appear, final question budgets are respected, required text fields are non-blank, and lifecycle failures are classified as non-retryable semantic errors. The relevant code will live around `internal/llm/schemas.go`, `internal/evalcore/validate.go`, and Temporal activity error handling.
+Earlier "semantic validation" wording means deterministic Go checks over parsed structured output. It is not validation "by meaning", not an extra LLM call, and not regex-based natural-language judging. JSON schema checks shape; Go checks cross-field and cross-object invariants that schema cannot fully express: every candidate has one diagnostic weight, split counts match exactly, no unknown IDs appear, final question budgets are respected, required text fields are non-blank, and lifecycle failures are classified with structured diagnostics. The relevant code will live around `internal/llm/schemas.go`, `internal/evalcore/validate.go`, and Temporal activity error handling.
+
+JSON repair, structured-output retries, and other LLM-call fixing logic should stay behind a separate LLM-call module boundary. Prompt-specific workflow/activity code should not grow bespoke repair loops, because that boundary can later become a shared library or service responsible for returning a valid structured response or a structured failure.
 
 ### 4.3 Options
 
 - `Option A`: Fail-fast at the activity boundary
   - **Rubrics**: `Conf:80% | Invest:i | Blast:i | Reversal:ii | Fit:i | Reuse:i | Obs:i | Surface:i | Perf:na`
   - **Approach**: Validate each LLM response inside the activity using schema parsing plus deterministic Go invariant checks, then return a non-retryable semantic error for invalid model output.
-  - **Example**: `AssignRefinements` returns non-retryable failure if a candidate ID is missing or duplicated; `SplitQuestion` returns non-retryable failure if it returns three questions when `refinement_count` requested four.
+  - **Example**: `AssignWeights` returns a structured failure if a candidate ID is missing or duplicated; `SplitQuestion` returns a structured failure if it returns three questions when `weight=4` requested four.
   - **Architecture**: Keeps external-boundary validation near the LLM call while leaving deterministic final assembly in evalcore.
   - **SSoT**: Validation rules live in shared evalcore/LLM validation functions, not repeated in workflow code.
   - **System limits**: Unknown - not available in local context.
   - **Trade-offs**: Fast failure and simple behavior; no automatic recovery from model mistakes.
 - `Option B`: Fail-fast at final checklist construction
   - **Rubrics**: `Conf:60% | Invest:ii | Blast:ii | Reversal:i | Fit:ii | Reuse:ii | Obs:ii | Surface:i | Perf:na`
-  - **Approach**: Let activities return parsed output and centralize all semantic validation in `BuildFinalChecklist`.
-  - **Example**: `BuildFinalChecklist` rejects duplicate refinements and split-count mismatches.
+  - **Approach**: Let activities return parsed output and centralize all structure/invariant validation in `BuildFinalChecklist`.
+  - **Example**: `BuildFinalChecklist` rejects duplicate diagnostic weights and split-count mismatches.
   - **Architecture**: Strong functional core, but invalid data travels farther through workflow state before failure.
   - **SSoT**: `BuildFinalChecklist` is the central invariant gate.
   - **System limits**: Unknown - not available in local context.
@@ -169,7 +181,7 @@ Semantic validation means deterministic Go checks over parsed structured output.
 
 I recommend **Option A**, backed by shared validation helpers so logic is not duplicated. It best matches fail-fast behavior at external boundaries while keeping the deterministic rules centralized.
 
-Decision: **Selected Option A**. Semantic validation is deterministic Go validation of schema-parsed data and cross-object invariants. There is no extra repair LLM call and no regex attempt to judge semantic natural-language equivalence.
+Decision: **Selected Option A**. The validators perform deterministic structure and invariant validation of schema-parsed data. There is no extra repair LLM call and no regex attempt to judge semantic natural-language equivalence inside these validators. Generic JSON repair or retry behavior belongs in a separate LLM-call fixing module.
 
 ### 5.1 Question
 
@@ -177,7 +189,7 @@ Is exact duplicate validation enough, or should overlap be handled more aggressi
 
 ### 5.2 Context & clarification
 
-Duplicate and overlap control affects score validity. If final questions repeat the same requirement, one concept gets counted multiple times. The plan avoids a separate dedupe stage and expects `AssignRefinements` to delete duplicate candidates before splitting. The final builder can still reject exact duplicate final question text.
+Duplicate and overlap control affects score validity. If final questions repeat the same requirement, one concept gets counted multiple times. The plan avoids a separate dedupe stage and expects `AssignWeights` to mark duplicate candidates with `weight=0` before splitting.
 
 ### 5.3 Options
 
@@ -192,7 +204,7 @@ Duplicate and overlap control affects score validity. If final questions repeat 
 - `Option B`: Prompt-level overlap prevention only
   - **Rubrics**: `Conf:60% | Invest:ii | Blast:ii | Reversal:iii | Fit:ii | Reuse:ii | Obs:ii | Surface:i | Perf:ii`
   - **Approach**: Add prompt requirements asking the model to avoid overlap, but do not add deterministic duplicate validation.
-  - **Example**: `AssignRefinements` prompt says to delete duplicate candidate questions.
+  - **Example**: `AssignWeights` prompt says to mark duplicate candidate questions with `weight=0`.
   - **Architecture**: Minimal code, weaker correctness because model compliance is not a contract.
   - **SSoT**: The prompt carries the behavior; no deterministic source of truth.
   - **System limits**: Unknown - not available in local context.
@@ -208,9 +220,9 @@ Duplicate and overlap control affects score validity. If final questions repeat 
 
 ### 5.4 Recommendation
 
-I recommended **Option A** before your decision, but your reasoning is stronger for this MVP: exact duplicates are unlikely with long probabilistic LLM-generated question text, and semantic duplication is better handled in the refinement prompt by assigning `refinement_count=0` to duplicates.
+I recommended **Option A** before your decision, but your reasoning is stronger for this MVP: exact duplicates are unlikely with long probabilistic LLM-generated question text, and semantic duplication is better handled in the weight prompt by assigning `weight=0` to duplicates.
 
-Decision: **Selected Option B**. The implementation should rely on the refinement assignment prompt to mark semantic duplicates for removal with `refinement_count=0`. It should not add exact duplicate validation or a separate dedupe stage in this MVP.
+Decision: **Selected Option B**. The implementation should rely on the weight assignment prompt to mark semantic duplicates for removal with `weight=0`. It should not add exact duplicate validation or a separate dedupe stage in this MVP.
 
 ### 6.1 Question
 
@@ -292,19 +304,19 @@ Should `GET /checklists/{id}` expose all generated structured metadata, includin
 
 ### 8.2 Context & clarification
 
-The plan currently exposes `dimensions`, `candidate_questions`, `refinements`, and final `questions`. Rationales are useful for debugging why candidates were kept, deleted, or split. Raw prompts, task/context, and model answers remain in Garage rather than Postgres response bodies.
+The plan currently exposes `dimensions`, `candidate_questions`, diagnostic `weights`, and final `questions`. Rationales are useful for debugging why candidates were kept, deleted, or split. Raw prompts, task/context, and model answers remain in Garage rather than Postgres response bodies.
 
 ### 8.3 Options
 
 - `Option A`: Expose all structured metadata and rationales
   - **Rubrics**: `Conf:80% | Invest:i | Blast:i | Reversal:ii | Fit:i | Reuse:i | Obs:i | Surface:ii | Perf:na`
-  - **Approach**: Return dimensions, candidates, refinements, rationales, and final questions in succeeded checklist responses.
-  - **Example**: A refinement object includes `candidate_question_id`, `refinement_count`, and `rationale`.
+  - **Approach**: Return dimensions, candidates, diagnostic weights, rationales, and final questions in succeeded checklist responses.
+  - **Example**: A weight object includes `candidate_question_id`, `weight`, and `rationale`.
   - **Architecture**: Matches the audit/debug nature of this local evaluation service.
   - **SSoT**: Postgres structured rows are the response source; raw artifacts stay in Garage.
   - **System limits**: Unknown - not available in local context.
   - **Trade-offs**: Most inspectable, larger response surface.
-- `Option B`: Expose dimensions, refinements, and final questions only
+- `Option B`: Expose dimensions, diagnostic weights, and final questions only
   - **Rubrics**: `Conf:70% | Invest:ii | Blast:ii | Reversal:i | Fit:ii | Reuse:ii | Obs:ii | Surface:i | Perf:na`
   - **Approach**: Return enough to evaluate the final checklist while hiding candidate question details from the default API response.
   - **Example**: `candidate_questions` is omitted; `questions` still include `source_candidate_id`.
@@ -315,7 +327,7 @@ The plan currently exposes `dimensions`, `candidate_questions`, `refinements`, a
 - `Option C`: Expose final questions only
   - **Rubrics**: `Conf:60% | Invest:iii | Blast:iii | Reversal:iii | Fit:iii | Reuse:iii | Obs:iii | Surface:i | Perf:na`
   - **Approach**: Return only final judged questions and score-relevant fields.
-  - **Example**: Checklist response contains `questions` but not dimensions, candidates, or refinements.
+  - **Example**: Checklist response contains `questions` but not dimensions, candidates, or diagnostic weights.
   - **Architecture**: Minimal API surface, but conflicts with the plan's inspectability goals.
   - **SSoT**: Final questions are the only API-visible checklist state.
   - **System limits**: Unknown - not available in local context.

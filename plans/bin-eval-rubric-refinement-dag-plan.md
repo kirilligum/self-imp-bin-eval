@@ -55,7 +55,7 @@
   - Rationale: Earlier "semantic validation" wording should be read as deterministic Go checks over schema-parsed output and cross-object invariants. It is structure and relationship validation, not validation by meaning, not regex-based natural-language judgment, and not an extra LLM repair call.
 - Topic: LLM-call fixing boundary
   - Verdict: DECISION
-  - Rationale: JSON repair, structured-output retries, and similar LLM-call fixing belong behind one LLM-call module boundary so that code can later become a shared library or service. Prompt-specific activities should not grow bespoke repair loops.
+  - Rationale: This plan should use one existing LLM-call module boundary in `internal/llm`. It should not add prompt-specific repair loops, provider adapters, or a new repair service. If JSON repair or structured-output retries are added later, they belong inside that one client boundary.
 
 ## 3. PRD / stakeholder and system needs
 
@@ -65,7 +65,7 @@
 - Business goals: Improve evaluation accuracy and diagnosability while retaining the running local service, persistent workflow architecture, and direct curl workflow.
 - Success metrics: Final checklists include dimensions, candidate questions, diagnostic weights, and final atomic questions; no final checklist question has a multiplier weight; good smoke answers score high, bad smoke answers score low; `make test-e2e` and `make test-live-curl` return succeeded evaluations with final-question counts, judgment coverage, score diagnostics, weight diagnostics, and limit diagnostics.
 - Scope: LLM schemas and prompts for dimension analysis, per-dimension question generation, weight assignment, and split generation; evalcore final checklist construction and equal scoring; Temporal DAG fan-out/fan-in workflow; Postgres migration and store updates; API response contract updates; Garage artifact key additions; docs and smoke script updates.
-- Non-goals: Public API exposure, auth, UI, learned calibration, multi-judge voting, category-level score reporting, additional model-provider routing, prompt-specific schema repair loops, external paper parsing, and public deployment. Generic JSON repair and structured-output retries belong behind a separate LLM-call fixing module boundary if added later.
+- Non-goals: Public API exposure, auth, UI, learned calibration, multi-judge voting, category-level score reporting, additional model-provider routing, prompt-specific schema repair loops, external paper parsing, new LLM repair services, and public deployment. Generic JSON repair and structured-output retries are not implemented in this plan; if added later, they belong inside the existing `internal/llm` client boundary.
 - Dependencies: Go toolchain, Temporal Go SDK, Postgres, Garage, Docker Compose, local LiteLLM Responses API at `http://127.0.0.1:4000/v1/responses`, existing Makefile commands, and existing smoke fixtures under `fixtures/smoke/cases/`.
 - Risks: Fan-out can increase LLM calls; dimension count and split count can create too many final questions; prompt changes can lower smoke separation; migrations can require resetting existing local development data; API response changes can break curl docs.
 - Assumptions: Existing local service is on `master`; `make lint`, `make build`, `make test`, `make test-integration`, `make test-e2e`, and `make test-live-curl` are available; current code stores candidates in `questions` and weights in `weights`; the new implementation keeps one diagnostic `weights` contract while deleting old weighted-score behavior.
@@ -108,7 +108,7 @@
 - REQ-040 (reliability): The workflow limits fan-out to bounded counts. Acceptance: validation rejects more than the configured maximum dimensions, candidates per dimension, split count, or final questions; default limits are `max_dimensions=6`, `max_candidates_per_dimension=8`, `max_split_count=4`, and `max_final_questions=64`; limit failures record `limit_name`, `configured_limit`, `observed_count`, `checklist_id`, and workflow/prompt stage where available.
 - REQ-041 (security): Prompts and logs do not include secrets. Acceptance: new tests keep secret redaction behavior and no prompt builder reads secret env vars.
 - REQ-042 (nfr): The pipeline remains deterministic after LLM outputs are parsed. Acceptance: Go-owned ID assignment, final question ordering, and scoring are deterministic for fixed LLM outputs.
-- REQ-043 (reliability): Invalid structured model output is classified consistently and persists failed workflow status. Acceptance: schema and deterministic invariant validation errors map to structured workflow failures; any generic JSON repair or retry behavior is isolated behind the LLM-call fixing module boundary rather than duplicated in activities.
+- REQ-043 (reliability): Invalid structured model output is classified consistently and persists failed workflow status. Acceptance: schema and deterministic invariant validation errors map to structured workflow failures; this plan adds no prompt-specific repair loops and no new repair service.
 - REQ-044 (nfr): Local operator commands remain valid. Acceptance: `make status-local`, `make test-live-curl`, and documented Fish curl snippets still work after response updates.
 - REQ-045 (maintainability): The implementation has one canonical rubric-refinement path and no old weighted-scoring path. Acceptance: runtime Go code has no old multiplier-weight assignment path, no duplicate `refinements` response field beside `weights`, no old response mode, no call-through layer around old weighted scoring, and no duplicated prompt requirements or final-question scoring logic.
 
@@ -116,7 +116,7 @@
 
 - Empty dimensions, empty candidate question lists for all dimensions, all diagnostic weights deleted, split count mismatches, and over-budget final question counts fail checklist creation with terminal failed status and structured diagnostics.
 - Infrastructure failures retain existing bounded Temporal retry behavior.
-- Structured model-output validation failures remain distinct from infrastructure failures and from any future generic LLM-call repair/retry module.
+- Structured model-output validation failures remain distinct from infrastructure failures.
 - Logs include prompt name, checklist ID, evaluation ID where applicable, error class, and limit diagnostics when a configured limit is hit, but do not log raw prompts or answers.
 - Smoke output includes checklist ID, evaluation ID, final question count, judgment count, score fields, failed final question IDs, per-case good/bad classification, and limit-hit counts.
 - Obsolete weighted-scoring behavior is removed rather than adapted, hidden, or kept behind a mode switch; diagnostic weights remain as audit data only.
@@ -172,7 +172,6 @@ C4-style ASCII representation:
 - Phase strategy: introduce new schemas and prompt contracts first, then domain construction/scoring, persistence, workflow activities, API/docs, and full smoke acceptance.
 - Implementation policy: keep one direct path through the system. Delete obsolete weighted-scoring runtime code as the rubric refinement path lands; the final runtime should have one current data model, one response contract, and one scoring implementation.
 - Verification-first controls: every behavior-changing phase starts with failing coverage tagged by `TEST-###`; matching implementation subtasks use the same command.
-- Compute controls: `branch_limits = 2`, `reflection_passes = 1`, `early_stop% = 30`.
 - Standards tailoring note: This plan borrows traceability and verification ideas from requirements engineering, but it intentionally does not add certification artifacts, extra assurance processes, or parallel code paths outside the local service objective.
 
 ### Risk register
@@ -186,7 +185,7 @@ C4-style ASCII representation:
 ### Suspension/resumption criteria
 
 - Suspend when LiteLLM is unavailable, Temporal tests become nondeterministic, the direct schema replacement cannot be represented cleanly, or the final API response contract needs an owner decision.
-- Resume by recording the decision in the plan or ADR index, then continue from the last phase with all phase tests passing.
+- Resume by recording the decision in the plan, then continue from the last phase with all phase tests passing.
 
 ### Phase P00: LLM Contracts Express Rubrics and Diagnostic Weights
 
@@ -462,7 +461,7 @@ Plan-and-Solve subtasks:
   - Stop/escalate condition: Stop if activity granularity needs fewer LLM calls.
   - Unlocks: P03.S02
 - `P03.S02 Implement rubric refinement LLM activities`
-  - Action: Add activity constants, input/output structs, registrations, and methods for `AnalyzeDimensions`, `GenerateQuestionsForDimension`, `AssignWeights`, and `SplitQuestion`; call the LLM through one shared LLM-call boundary with no prompt-specific repair loops; validate model output through deterministic Go validators at activity boundaries; update `JudgeAnswer` to use final questions only.
+  - Action: Add activity constants, input/output structs, registrations, and methods for `AnalyzeDimensions`, `GenerateQuestionsForDimension`, `AssignWeights`, and `SplitQuestion`; call the LLM through the existing `internal/llm` client boundary with no prompt-specific repair loops; validate model output through deterministic Go validators at activity boundaries; update `JudgeAnswer` to use final questions only.
   - Why now: Workflow code depends on registered activities.
   - Files/surfaces: `internal/activities/llm.go`, `internal/activities/register.go`.
   - Requirement link: REQ-001, REQ-002, REQ-006, REQ-007, REQ-008, REQ-010, REQ-022, REQ-035, REQ-043.

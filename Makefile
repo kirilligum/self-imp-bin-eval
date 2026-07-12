@@ -8,6 +8,9 @@ lint:
 		unformatted=$$(gofmt -l $$files); \
 		if [ -n "$$unformatted" ]; then echo "$$unformatted"; exit 1; fi; \
 	fi
+	scripts/validate_local_runtime_contract.sh
+	scripts/validate_docs_curl.sh
+	scripts/validate_traceability.sh
 	go vet ./...
 
 build:
@@ -23,6 +26,7 @@ test-integration:
 
 test-e2e:
 	scripts/smoke_curl.sh
+	scripts/validate_smoke_invariants.sh
 
 install-local:
 	scripts/install-local-systemd.sh

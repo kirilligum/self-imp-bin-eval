@@ -25,6 +25,36 @@ func TestValidateDimensionGeneration(t *testing.T) {
 }
 
 // TEST-002
+func TestValidateDimensionsDecisionTable(t *testing.T) {
+	valid, _ := validRubricInputs()
+	second := Dimension{ID: "d2", Ordinal: 2, Name: "Evidence", Rubric: "Check evidence.", Rationale: "Support."}
+
+	for _, tc := range []struct {
+		name       string
+		dimensions []Dimension
+		limits     ChecklistLimits
+		limitName  string
+	}{
+		{name: "empty", dimensions: nil},
+		{name: "blank id", dimensions: mutateDimensions(valid, func(d []Dimension) { d[0].ID = " " })},
+		{name: "duplicate id", dimensions: append(cloneDimensions(valid), Dimension{ID: "d1", Ordinal: 2, Name: "Evidence", Rubric: "Check evidence.", Rationale: "Support."})},
+		{name: "invalid ordinal", dimensions: mutateDimensions(valid, func(d []Dimension) { d[0].Ordinal = 0 })},
+		{name: "blank name", dimensions: mutateDimensions(valid, func(d []Dimension) { d[0].Name = " " })},
+		{name: "blank rubric", dimensions: mutateDimensions(valid, func(d []Dimension) { d[0].Rubric = " " })},
+		{name: "blank rationale", dimensions: mutateDimensions(valid, func(d []Dimension) { d[0].Rationale = " " })},
+		{name: "over max", dimensions: append(cloneDimensions(valid), second), limits: ChecklistLimits{MaxDimensions: 1}, limitName: "max_dimensions"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateDimensions(tc.dimensions, tc.limits.WithDefaults())
+			assertSemanticError(t, err, CodeInvalidDimensionAnalysis)
+			if tc.limitName != "" {
+				assertSingleLimitDiagnostic(t, err, tc.limitName)
+			}
+		})
+	}
+}
+
+// TEST-002
 func TestValidateQuestionGeneration(t *testing.T) {
 	valid := []DraftQuestion{{Rationale: "Targets the main requirement.", Question: "Does the answer state the main requirement?"}}
 	if err := ValidateQuestionGeneration(valid, DefaultChecklistLimits()); err != nil {
@@ -41,6 +71,35 @@ func TestValidateQuestionGeneration(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			assertSemanticError(t, ValidateQuestionGeneration(tc.drafts, DefaultChecklistLimits()), CodeInvalidQuestionGeneration)
+		})
+	}
+}
+
+// TEST-002
+func TestValidateCandidateQuestionsDecisionTable(t *testing.T) {
+	dimensions, candidates := validRubricInputs()
+
+	for _, tc := range []struct {
+		name       string
+		candidates []CandidateQuestion
+		limits     ChecklistLimits
+		limitName  string
+	}{
+		{name: "empty", candidates: nil},
+		{name: "blank id", candidates: mutateCandidates(candidates, func(c []CandidateQuestion) { c[0].ID = " " })},
+		{name: "duplicate id", candidates: mutateCandidates(candidates, func(c []CandidateQuestion) { c[1].ID = c[0].ID })},
+		{name: "unknown dimension", candidates: mutateCandidates(candidates, func(c []CandidateQuestion) { c[0].DimensionID = "d999" })},
+		{name: "invalid ordinal", candidates: mutateCandidates(candidates, func(c []CandidateQuestion) { c[0].Ordinal = 0 })},
+		{name: "blank rationale", candidates: mutateCandidates(candidates, func(c []CandidateQuestion) { c[0].Rationale = " " })},
+		{name: "blank question", candidates: mutateCandidates(candidates, func(c []CandidateQuestion) { c[0].Question = "\n\t" })},
+		{name: "over max per dimension", candidates: candidates[:2], limits: ChecklistLimits{MaxCandidatesPerDimension: 1}, limitName: "max_candidates_per_dimension"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateCandidateQuestions(dimensions, tc.candidates, tc.limits.WithDefaults())
+			assertSemanticError(t, err, CodeInvalidQuestionGeneration)
+			if tc.limitName != "" {
+				assertSingleLimitDiagnostic(t, err, tc.limitName)
+			}
 		})
 	}
 }
@@ -70,6 +129,74 @@ func TestValidateWeights(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			assertSemanticError(t, ValidateWeights(candidates, tc.weights, DefaultChecklistLimits()), CodeInvalidWeights)
+		})
+	}
+}
+
+// TEST-002
+func TestValidateFinalQuestionsDecisionTable(t *testing.T) {
+	dimensions, candidates := validRubricInputs()
+	valid := []FinalQuestion{
+		{ID: "q1", Ordinal: 1, DimensionID: "d1", SourceCandidateID: "c1", Rationale: "r1", Question: "Q1?"},
+		{ID: "q2", Ordinal: 2, DimensionID: "d1", SourceCandidateID: "c2", Rationale: "r2", Question: "Q2?"},
+	}
+
+	for _, tc := range []struct {
+		name       string
+		dimensions []Dimension
+		questions  []FinalQuestion
+		limits     ChecklistLimits
+		limitName  string
+	}{
+		{name: "empty", questions: nil},
+		{name: "blank id", questions: mutateFinalQuestions(valid, func(q []FinalQuestion) { q[0].ID = " " })},
+		{name: "duplicate id", questions: mutateFinalQuestions(valid, func(q []FinalQuestion) { q[1].ID = q[0].ID })},
+		{name: "invalid ordinal", questions: mutateFinalQuestions(valid, func(q []FinalQuestion) { q[0].Ordinal = 0 })},
+		{name: "duplicate ordinal", questions: mutateFinalQuestions(valid, func(q []FinalQuestion) { q[1].Ordinal = q[0].Ordinal })},
+		{name: "unknown dimension", questions: mutateFinalQuestions(valid, func(q []FinalQuestion) { q[0].DimensionID = "d999" })},
+		{name: "unknown source", questions: mutateFinalQuestions(valid, func(q []FinalQuestion) { q[0].SourceCandidateID = "c999" })},
+		{name: "dimension mismatch", dimensions: append(cloneDimensions(dimensions), Dimension{ID: "d2", Ordinal: 2, Name: "Evidence", Rubric: "Check evidence.", Rationale: "Support."}), questions: mutateFinalQuestions(valid, func(q []FinalQuestion) { q[0].DimensionID = "d2" })},
+		{name: "blank rationale", questions: mutateFinalQuestions(valid, func(q []FinalQuestion) { q[0].Rationale = " " })},
+		{name: "blank question", questions: mutateFinalQuestions(valid, func(q []FinalQuestion) { q[0].Question = "\n\t" })},
+		{name: "over max", questions: valid, limits: ChecklistLimits{MaxFinalQuestions: 1}, limitName: "max_final_questions"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			testDimensions := dimensions
+			if tc.dimensions != nil {
+				testDimensions = tc.dimensions
+			}
+			err := ValidateFinalQuestions(testDimensions, candidates, tc.questions, tc.limits.WithDefaults())
+			assertSemanticError(t, err, CodeInvalidFinalChecklist)
+			if tc.limitName != "" {
+				assertSingleLimitDiagnostic(t, err, tc.limitName)
+			}
+		})
+	}
+}
+
+// TEST-002
+func TestValidateSplitQuestionsDecisionTable(t *testing.T) {
+	valid := SplitQuestions{CandidateQuestionID: "c1", Questions: []DraftQuestion{
+		{Rationale: "r1", Question: "Q1?"},
+		{Rationale: "r2", Question: "Q2?"},
+	}}
+	if err := ValidateSplitQuestions(valid, 2); err != nil {
+		t.Fatalf("valid split error = %v", err)
+	}
+
+	for _, tc := range []struct {
+		name          string
+		split         SplitQuestions
+		expectedCount int
+	}{
+		{name: "blank id", split: mutateSplit(valid, func(s *SplitQuestions) { s.CandidateQuestionID = " " }), expectedCount: 2},
+		{name: "expected count too low", split: valid, expectedCount: 1},
+		{name: "wrong count", split: mutateSplit(valid, func(s *SplitQuestions) { s.Questions = s.Questions[:1] }), expectedCount: 2},
+		{name: "blank rationale", split: mutateSplit(valid, func(s *SplitQuestions) { s.Questions[0].Rationale = " " }), expectedCount: 2},
+		{name: "blank question", split: mutateSplit(valid, func(s *SplitQuestions) { s.Questions[0].Question = "\n\t" }), expectedCount: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assertSemanticError(t, ValidateSplitQuestions(tc.split, tc.expectedCount), CodeInvalidSplits)
 		})
 	}
 }
@@ -107,6 +234,37 @@ func TestValidateJudgments(t *testing.T) {
 	}
 }
 
+func cloneDimensions(in []Dimension) []Dimension {
+	return append([]Dimension(nil), in...)
+}
+
+func mutateDimensions(in []Dimension, mutate func([]Dimension)) []Dimension {
+	out := cloneDimensions(in)
+	mutate(out)
+	return out
+}
+
+func mutateCandidates(in []CandidateQuestion, mutate func([]CandidateQuestion)) []CandidateQuestion {
+	out := append([]CandidateQuestion(nil), in...)
+	mutate(out)
+	return out
+}
+
+func mutateFinalQuestions(in []FinalQuestion, mutate func([]FinalQuestion)) []FinalQuestion {
+	out := append([]FinalQuestion(nil), in...)
+	mutate(out)
+	return out
+}
+
+func mutateSplit(in SplitQuestions, mutate func(*SplitQuestions)) SplitQuestions {
+	out := SplitQuestions{
+		CandidateQuestionID: in.CandidateQuestionID,
+		Questions:           append([]DraftQuestion(nil), in.Questions...),
+	}
+	mutate(&out)
+	return out
+}
+
 func assertSemanticError(t *testing.T, err error, code ErrorCode) {
 	t.Helper()
 	if err == nil {
@@ -118,5 +276,19 @@ func assertSemanticError(t *testing.T, err error, code ErrorCode) {
 	}
 	if semantic.Code != code {
 		t.Fatalf("error code = %q, want %q: %v", semantic.Code, code, err)
+	}
+}
+
+func assertSingleLimitDiagnostic(t *testing.T, err error, limitName string) {
+	t.Helper()
+	semantic, ok := err.(*SemanticError)
+	if !ok {
+		t.Fatalf("error type = %T, want *SemanticError", err)
+	}
+	if len(semantic.Diagnostics) != 1 {
+		t.Fatalf("diagnostics = %#v, want exactly one", semantic.Diagnostics)
+	}
+	if semantic.Diagnostics[0].LimitName != limitName {
+		t.Fatalf("limit name = %q, want %q", semantic.Diagnostics[0].LimitName, limitName)
 	}
 }

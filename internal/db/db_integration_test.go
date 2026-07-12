@@ -25,9 +25,23 @@ func TestPostgresMigrationsAndConcreteStore(t *testing.T) {
 	if err := ApplyMigrations(ctx, pool, "migrations"); err != nil {
 		t.Fatalf("ApplyMigrations() error = %v", err)
 	}
+	if err := ApplyMigrations(ctx, pool, "migrations"); err != nil {
+		t.Fatalf("ApplyMigrations() second run error = %v", err)
+	}
+	assertMigrationCount(t, ctx, pool)
 	cleanupDB(t, ctx, pool)
 
 	store := NewStore(pool)
+	if _, err := store.GetChecklist(ctx, "00000000-0000-0000-0000-000000000000"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("GetChecklist missing error = %v, want ErrNotFound", err)
+	}
+	if _, err := store.GetEvaluation(ctx, "00000000-0000-0000-0000-000000000000"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("GetEvaluation missing error = %v, want ErrNotFound", err)
+	}
+	if _, err := store.CreateEvaluation(ctx, "00000000-0000-0000-0000-000000000000", "answer"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("CreateEvaluation missing checklist error = %v, want ErrNotFound", err)
+	}
+
 	checklistID, err := store.CreateChecklist(ctx, "checklists/test/inputs/task.txt", "checklists/test/inputs/context.txt")
 	if err != nil {
 		t.Fatalf("CreateChecklist() error = %v", err)
@@ -73,6 +87,12 @@ func TestPostgresMigrationsAndConcreteStore(t *testing.T) {
 	if _, err := store.CreateEvaluation(ctx, runningChecklistID, "answer"); !errors.Is(err, ErrConflict) {
 		t.Fatalf("CreateEvaluation against running checklist error = %v, want ErrConflict", err)
 	}
+	if err := store.FailChecklist(ctx, runningChecklistID, "not ready"); err != nil {
+		t.Fatalf("FailChecklist running error = %v", err)
+	}
+	if _, err := store.CreateEvaluation(ctx, runningChecklistID, "answer"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("CreateEvaluation against failed checklist error = %v, want ErrConflict", err)
+	}
 
 	evaluationID, err := store.CreateEvaluation(ctx, checklistID, "evaluations/test/inputs/model_answer.txt")
 	if err != nil {
@@ -100,6 +120,26 @@ func TestPostgresMigrationsAndConcreteStore(t *testing.T) {
 		t.Fatalf("judgments did not round-trip active-only rows: %#v", gotEvaluation.Judgments)
 	}
 
+	mismatchedEvaluationID, err := store.CreateEvaluation(ctx, checklistID, "evaluations/test/inputs/mismatched.txt")
+	if err != nil {
+		t.Fatalf("CreateEvaluation mismatched score error = %v", err)
+	}
+	badScore := evalcore.ScoreResult{SatisfiedPoints: 0, TotalPossiblePoints: 1, ChecklistPassRate: 0, FailedQuestionIDs: []string{"q1"}}
+	err = store.SucceedEvaluation(ctx, mismatchedEvaluationID, checklistID, []evalcore.Judgment{
+		{QuestionID: "q1", Evidence: "It is included.", Answer: evalcore.AnswerYes},
+	}, badScore)
+	var semanticErr *evalcore.SemanticError
+	if !errors.As(err, &semanticErr) || semanticErr.Code != evalcore.CodeInvalidJudgments {
+		t.Fatalf("SucceedEvaluation mismatched score error = %T %v, want invalid judgments semantic error", err, err)
+	}
+	gotMismatched, err := store.GetEvaluation(ctx, mismatchedEvaluationID)
+	if err != nil {
+		t.Fatalf("GetEvaluation mismatched error = %v", err)
+	}
+	if gotMismatched.Status != StatusRunning || len(gotMismatched.Judgments) != 0 {
+		t.Fatalf("mismatched evaluation mutated despite failure: %#v", gotMismatched)
+	}
+
 	if err := store.FailChecklist(ctx, checklistID, "late failure"); !errors.Is(err, ErrConflict) {
 		t.Fatalf("terminal checklist update error = %v, want ErrConflict", err)
 	}
@@ -111,6 +151,21 @@ func TestPostgresMigrationsAndConcreteStore(t *testing.T) {
 	assertDuplicateJudgmentRejected(t, ctx, pool, evaluationID, checklistID)
 	assertCrossChecklistJudgmentRejected(t, ctx, store, pool, checklistID, evaluationID)
 	assertNoRawInputColumns(t, ctx, pool)
+}
+
+func assertMigrationCount(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
+	t.Helper()
+	files, err := migrationFiles("migrations")
+	if err != nil {
+		t.Fatalf("migrationFiles() error = %v", err)
+	}
+	var count int
+	if err := pool.QueryRow(ctx, `select count(*) from schema_migrations`).Scan(&count); err != nil {
+		t.Fatalf("schema_migrations count error = %v", err)
+	}
+	if count != len(files) {
+		t.Fatalf("schema_migrations count = %d, want %d", count, len(files))
+	}
 }
 
 func openTestPool(t *testing.T, ctx context.Context) *pgxpool.Pool {

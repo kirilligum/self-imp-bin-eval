@@ -6,6 +6,7 @@ import (
 	"github.com/kirilligum/self-imp-bin-eval/internal/activities"
 	"github.com/kirilligum/self-imp-bin-eval/internal/evalcore"
 	"github.com/stretchr/testify/mock"
+	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/testsuite"
 )
 
@@ -98,4 +99,111 @@ func TestWorkflowFailurePersistence(t *testing.T) {
 		t.Fatal("expected workflow failure")
 	}
 	env.AssertExpectations(t)
+}
+
+// TEST-019
+func TestCreateChecklistWorkflowFailureMatrix(t *testing.T) {
+	t.Run("invalid analyzed dimensions fail before question generation", func(t *testing.T) {
+		env := newCreateChecklistTestEnv()
+		limits := evalcore.DefaultChecklistLimits()
+		input := CreateChecklistInput{ChecklistID: "checklist-invalid-dimensions", Task: "task", Context: "context", Limits: limits}
+
+		env.OnActivity(activities.ActivityWriteChecklistInputs, mock.Anything, mock.Anything).Return(nil).Once()
+		env.OnActivity(activities.ActivityAnalyzeDimensions, mock.Anything, mock.Anything).Return(activities.AnalyzeDimensionsResult{}, nil).Once()
+		expectFailChecklist(env, input.ChecklistID)
+
+		env.ExecuteWorkflow(CreateChecklistWorkflow, input)
+		if env.GetWorkflowError() == nil {
+			t.Fatal("expected workflow failure")
+		}
+		env.AssertExpectations(t)
+	})
+
+	t.Run("question generation activity failure persists failed checklist", func(t *testing.T) {
+		env := newCreateChecklistTestEnv()
+		limits := evalcore.DefaultChecklistLimits()
+		input := CreateChecklistInput{ChecklistID: "checklist-generate-fail", Task: "task", Context: "context", Limits: limits}
+		dimensions := []evalcore.Dimension{{ID: "d1", Ordinal: 1, Name: "Correctness", Rubric: "Check correctness.", Rationale: "Core."}}
+
+		env.OnActivity(activities.ActivityWriteChecklistInputs, mock.Anything, mock.Anything).Return(nil).Once()
+		env.OnActivity(activities.ActivityAnalyzeDimensions, mock.Anything, mock.Anything).Return(activities.AnalyzeDimensionsResult{Dimensions: dimensions}, nil).Once()
+		env.OnActivity(activities.ActivityGenerateQuestionsForDimension, mock.Anything, mock.Anything).Return(activities.GenerateQuestionsForDimensionResult{}, nonRetryableActivityError("generation failed")).Once()
+		expectFailChecklist(env, input.ChecklistID)
+
+		env.ExecuteWorkflow(CreateChecklistWorkflow, input)
+		if env.GetWorkflowError() == nil {
+			t.Fatal("expected workflow failure")
+		}
+		env.AssertExpectations(t)
+	})
+
+	t.Run("split activity failure persists failed checklist", func(t *testing.T) {
+		env := newCreateChecklistTestEnv()
+		limits := evalcore.DefaultChecklistLimits()
+		input := CreateChecklistInput{ChecklistID: "checklist-split-fail", Task: "task", Context: "context", Limits: limits}
+		dimensions := []evalcore.Dimension{{ID: "d1", Ordinal: 1, Name: "Correctness", Rubric: "Check correctness.", Rationale: "Core."}}
+		drafts := []evalcore.DraftQuestion{{Rationale: "broad", Question: "Broad?"}}
+		candidates := []evalcore.CandidateQuestion{{ID: "c1", DimensionID: "d1", Ordinal: 1, Rationale: "broad", Question: "Broad?"}}
+		weights := []evalcore.Weight{{CandidateQuestionID: "c1", Rationale: "split", Weight: 2}}
+
+		env.OnActivity(activities.ActivityWriteChecklistInputs, mock.Anything, mock.Anything).Return(nil).Once()
+		env.OnActivity(activities.ActivityAnalyzeDimensions, mock.Anything, mock.Anything).Return(activities.AnalyzeDimensionsResult{Dimensions: dimensions}, nil).Once()
+		env.OnActivity(activities.ActivityGenerateQuestionsForDimension, mock.Anything, mock.Anything).Return(activities.GenerateQuestionsForDimensionResult{Questions: drafts}, nil).Once()
+		env.OnActivity(activities.ActivityAssignWeights, mock.Anything, mock.Anything).Return(activities.AssignWeightsResult{Weights: weights}, nil).Once()
+		env.OnActivity(activities.ActivitySplitQuestion, mock.Anything, activities.SplitQuestionInput{
+			ChecklistID:       input.ChecklistID,
+			Task:              input.Task,
+			Context:           input.Context,
+			CandidateQuestion: candidates[0],
+			Weight:            weights[0],
+			Limits:            limits,
+		}).Return(activities.SplitQuestionResult{}, nonRetryableActivityError("split failed")).Once()
+		expectFailChecklist(env, input.ChecklistID)
+
+		env.ExecuteWorkflow(CreateChecklistWorkflow, input)
+		if env.GetWorkflowError() == nil {
+			t.Fatal("expected workflow failure")
+		}
+		env.AssertExpectations(t)
+	})
+
+	t.Run("succeed checklist activity failure is persisted as failed", func(t *testing.T) {
+		env := newCreateChecklistTestEnv()
+		limits := evalcore.DefaultChecklistLimits()
+		input := CreateChecklistInput{ChecklistID: "checklist-succeed-fail", Task: "task", Context: "context", Limits: limits}
+		dimensions := []evalcore.Dimension{{ID: "d1", Ordinal: 1, Name: "Correctness", Rubric: "Check correctness.", Rationale: "Core."}}
+		drafts := []evalcore.DraftQuestion{{Rationale: "normal", Question: "Normal?"}}
+		weights := []evalcore.Weight{{CandidateQuestionID: "c1", Rationale: "normal", Weight: 1}}
+
+		env.OnActivity(activities.ActivityWriteChecklistInputs, mock.Anything, mock.Anything).Return(nil).Once()
+		env.OnActivity(activities.ActivityAnalyzeDimensions, mock.Anything, mock.Anything).Return(activities.AnalyzeDimensionsResult{Dimensions: dimensions}, nil).Once()
+		env.OnActivity(activities.ActivityGenerateQuestionsForDimension, mock.Anything, mock.Anything).Return(activities.GenerateQuestionsForDimensionResult{Questions: drafts}, nil).Once()
+		env.OnActivity(activities.ActivityAssignWeights, mock.Anything, mock.Anything).Return(activities.AssignWeightsResult{Weights: weights}, nil).Once()
+		env.OnActivity(activities.ActivitySucceedChecklist, mock.Anything, mock.Anything).Return(nonRetryableActivityError("terminal write failed")).Once()
+		expectFailChecklist(env, input.ChecklistID)
+
+		env.ExecuteWorkflow(CreateChecklistWorkflow, input)
+		if env.GetWorkflowError() == nil {
+			t.Fatal("expected workflow failure")
+		}
+		env.AssertExpectations(t)
+	})
+}
+
+func newCreateChecklistTestEnv() *testsuite.TestWorkflowEnvironment {
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(CreateChecklistWorkflow)
+	registerActivityNames(env)
+	return env
+}
+
+func expectFailChecklist(env *testsuite.TestWorkflowEnvironment, checklistID string) {
+	env.OnActivity(activities.ActivityFailChecklist, mock.Anything, mock.MatchedBy(func(in activities.FailChecklistInput) bool {
+		return in.ChecklistID == checklistID && in.ErrorMessage != ""
+	})).Return(nil).Once()
+}
+
+func nonRetryableActivityError(message string) error {
+	return temporal.NewNonRetryableApplicationError(message, activities.ErrorClassModelOutputInvalid, nil)
 }

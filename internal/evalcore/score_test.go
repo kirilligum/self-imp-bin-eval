@@ -1,6 +1,9 @@
 package evalcore
 
-import "testing"
+import (
+	"fmt"
+	"testing"
+)
 
 // TEST-002
 func TestEvalcoreRubricRefinement(t *testing.T) {
@@ -135,6 +138,83 @@ func TestEvalcoreRubricRefinementValidation(t *testing.T) {
 	})
 }
 
+// TEST-002
+func TestEvalcorePairwiseCoreScenarios(t *testing.T) {
+	t.Run("PW01 all zero weights produce no final checklist", func(t *testing.T) {
+		dimensions, candidates := validRubricInputs()
+		weights := weightsForCandidates(candidates, 0)
+		_, err := BuildFinalChecklist(dimensions, candidates, weights, nil, DefaultChecklistLimits())
+		assertSemanticError(t, err, CodeInvalidFinalChecklist)
+	})
+
+	t.Run("PW02 final limit reports diagnostics", func(t *testing.T) {
+		dimensions, candidates := validRubricInputs()
+		weights := weightsForCandidates(candidates[:2], 1)
+		_, err := BuildFinalChecklist(dimensions, candidates[:2], weights, nil, ChecklistLimits{MaxFinalQuestions: 1})
+		assertSemanticError(t, err, CodeInvalidFinalChecklist)
+		assertSingleLimitDiagnostic(t, err, "max_final_questions")
+	})
+
+	t.Run("PW03 bad split count fails before scoring", func(t *testing.T) {
+		dimensions, candidates := validRubricInputs()
+		weights := []Weight{
+			{CandidateQuestionID: "c1", Rationale: "split", Weight: 2},
+			{CandidateQuestionID: "c2", Rationale: "normal", Weight: 1},
+		}
+		splits := []SplitQuestions{{CandidateQuestionID: "c1", Questions: []DraftQuestion{{Rationale: "only one", Question: "Only one?"}}}}
+		_, err := BuildFinalChecklist(dimensions, candidates[:2], weights, splits, DefaultChecklistLimits())
+		assertSemanticError(t, err, CodeInvalidSplits)
+	})
+
+	t.Run("PW04 invalid weight reference fails before split validation", func(t *testing.T) {
+		dimensions, candidates := validRubricInputs()
+		weights := []Weight{
+			{CandidateQuestionID: "c1", Rationale: "normal", Weight: 1},
+			{CandidateQuestionID: "cx", Rationale: "unknown", Weight: 1},
+		}
+		_, err := BuildFinalChecklist(dimensions, candidates[:2], weights, nil, DefaultChecklistLimits())
+		assertSemanticError(t, err, CodeInvalidWeights)
+	})
+
+	t.Run("PW05 max dimensions with normal weights score all yes", func(t *testing.T) {
+		dimensions, candidates := generatedRubricInputs(DefaultMaxDimensions, 1)
+		weights := weightsForCandidates(candidates, 1)
+		final, err := BuildFinalChecklist(dimensions, candidates, weights, nil, DefaultChecklistLimits())
+		if err != nil {
+			t.Fatalf("BuildFinalChecklist() error = %v", err)
+		}
+		if len(final) != DefaultMaxDimensions || final[len(final)-1].ID != "q6" {
+			t.Fatalf("final questions = %#v", final)
+		}
+		judgments := make([]Judgment, 0, len(final))
+		for _, question := range final {
+			judgments = append(judgments, Judgment{QuestionID: question.ID, Evidence: "Satisfied.", Answer: AnswerYes})
+		}
+		score, err := ScoreChecklist(final, judgments)
+		if err != nil {
+			t.Fatalf("ScoreChecklist() error = %v", err)
+		}
+		if score.SatisfiedPoints != len(final) || score.ChecklistPassRate != 1 || len(score.FailedQuestionIDs) != 0 || score.FailedQuestionIDs == nil {
+			t.Fatalf("score = %#v", score)
+		}
+	})
+
+	t.Run("PW06 duplicate judgment preserves invalid judgment oracle", func(t *testing.T) {
+		dimensions, candidates := validRubricInputs()
+		weights := weightsForCandidates(candidates[:2], 1)
+		final, err := BuildFinalChecklist(dimensions, candidates[:2], weights, nil, DefaultChecklistLimits())
+		if err != nil {
+			t.Fatalf("BuildFinalChecklist() error = %v", err)
+		}
+		_, err = ScoreChecklist(final, []Judgment{
+			{QuestionID: "q1", Evidence: "First.", Answer: AnswerYes},
+			{QuestionID: "q1", Evidence: "Duplicate.", Answer: AnswerNo},
+			{QuestionID: "q2", Evidence: "Second.", Answer: AnswerYes},
+		})
+		assertSemanticError(t, err, CodeInvalidJudgments)
+	})
+}
+
 func validRubricInputs() ([]Dimension, []CandidateQuestion) {
 	dimensions := []Dimension{
 		{ID: "d1", Ordinal: 1, Name: "Correctness", Rubric: "Check correctness.", Rationale: "Core."},
@@ -144,6 +224,41 @@ func validRubricInputs() ([]Dimension, []CandidateQuestion) {
 		{ID: "c2", DimensionID: "d1", Ordinal: 2, Rationale: "normal", Question: "Does it satisfy normal requirement?"},
 		{ID: "c3", DimensionID: "d1", Ordinal: 3, Rationale: "broad", Question: "Does it cover alpha and beta?"},
 		{ID: "c4", DimensionID: "d1", Ordinal: 4, Rationale: "very broad", Question: "Does it cover four details?"},
+	}
+	return dimensions, candidates
+}
+
+func weightsForCandidates(candidates []CandidateQuestion, value int) []Weight {
+	weights := make([]Weight, 0, len(candidates))
+	for _, candidate := range candidates {
+		weights = append(weights, Weight{CandidateQuestionID: candidate.ID, Rationale: "assigned", Weight: value})
+	}
+	return weights
+}
+
+func generatedRubricInputs(dimensionCount, candidatesPerDimension int) ([]Dimension, []CandidateQuestion) {
+	dimensions := make([]Dimension, 0, dimensionCount)
+	candidates := make([]CandidateQuestion, 0, dimensionCount*candidatesPerDimension)
+	ordinal := 1
+	for d := 1; d <= dimensionCount; d++ {
+		dimensionID := fmt.Sprintf("d%d", d)
+		dimensions = append(dimensions, Dimension{
+			ID:        dimensionID,
+			Ordinal:   d,
+			Name:      "Dimension",
+			Rubric:    "Check dimension.",
+			Rationale: "Needed.",
+		})
+		for c := 1; c <= candidatesPerDimension; c++ {
+			candidates = append(candidates, CandidateQuestion{
+				ID:          fmt.Sprintf("c%d", ordinal),
+				DimensionID: dimensionID,
+				Ordinal:     ordinal,
+				Rationale:   "candidate",
+				Question:    "Question?",
+			})
+			ordinal++
+		}
 	}
 	return dimensions, candidates
 }

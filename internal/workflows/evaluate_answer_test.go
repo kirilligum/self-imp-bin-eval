@@ -73,3 +73,113 @@ func TestEvaluateAnswerWorkflowFailurePersistence(t *testing.T) {
 	}
 	env.AssertExpectations(t)
 }
+
+// TEST-019
+func TestEvaluateAnswerWorkflowFailureMatrix(t *testing.T) {
+	finalQuestions := []evalcore.FinalQuestion{
+		{ID: "q1", Ordinal: 1, DimensionID: "d1", SourceCandidateID: "c1", Rationale: "normal", Question: "Normal?"},
+		{ID: "q2", Ordinal: 2, DimensionID: "d1", SourceCandidateID: "c2", Rationale: "detail", Question: "Specific?"},
+	}
+	succeededChecklist := db.Checklist{ID: "checklist-1", Status: db.StatusSucceeded, Questions: finalQuestions}
+
+	t.Run("load checklist activity failure persists failed evaluation", func(t *testing.T) {
+		env := newEvaluateAnswerTestEnv()
+		input := EvaluateAnswerInput{EvaluationID: "evaluation-load-fail", ChecklistID: "checklist-1", ModelAnswer: "answer"}
+		env.OnActivity(activities.ActivityWriteEvaluationInput, mock.Anything, mock.Anything).Return(nil).Once()
+		env.OnActivity(activities.ActivityLoadChecklist, mock.Anything, activities.LoadChecklistInput{ChecklistID: "checklist-1"}).
+			Return(activities.LoadChecklistResult{}, nonRetryableActivityError("load failed")).Once()
+		expectFailEvaluation(env, input.EvaluationID, input.ChecklistID)
+
+		env.ExecuteWorkflow(EvaluateAnswerWorkflow, input)
+		if env.GetWorkflowError() == nil {
+			t.Fatal("expected workflow failure")
+		}
+		env.AssertExpectations(t)
+	})
+
+	t.Run("failed checklist status rejects before judging", func(t *testing.T) {
+		env := newEvaluateAnswerTestEnv()
+		input := EvaluateAnswerInput{EvaluationID: "evaluation-status-fail", ChecklistID: "checklist-1", ModelAnswer: "answer"}
+		env.OnActivity(activities.ActivityWriteEvaluationInput, mock.Anything, mock.Anything).Return(nil).Once()
+		env.OnActivity(activities.ActivityLoadChecklist, mock.Anything, activities.LoadChecklistInput{ChecklistID: "checklist-1"}).
+			Return(activities.LoadChecklistResult{Checklist: db.Checklist{ID: "checklist-1", Status: db.StatusFailed}}, nil).Once()
+		expectFailEvaluation(env, input.EvaluationID, input.ChecklistID)
+
+		env.ExecuteWorkflow(EvaluateAnswerWorkflow, input)
+		if env.GetWorkflowError() == nil {
+			t.Fatal("expected workflow failure")
+		}
+		env.AssertExpectations(t)
+	})
+
+	t.Run("judge activity failure persists failed evaluation", func(t *testing.T) {
+		env := newEvaluateAnswerTestEnv()
+		input := EvaluateAnswerInput{EvaluationID: "evaluation-judge-fail", ChecklistID: "checklist-1", ModelAnswer: "answer"}
+		env.OnActivity(activities.ActivityWriteEvaluationInput, mock.Anything, mock.Anything).Return(nil).Once()
+		env.OnActivity(activities.ActivityLoadChecklist, mock.Anything, mock.Anything).
+			Return(activities.LoadChecklistResult{Checklist: succeededChecklist, Task: "task", Context: "context"}, nil).Once()
+		env.OnActivity(activities.ActivityJudgeAnswer, mock.Anything, mock.Anything).
+			Return(activities.JudgeAnswerResult{}, nonRetryableActivityError("judge failed")).Once()
+		expectFailEvaluation(env, input.EvaluationID, input.ChecklistID)
+
+		env.ExecuteWorkflow(EvaluateAnswerWorkflow, input)
+		if env.GetWorkflowError() == nil {
+			t.Fatal("expected workflow failure")
+		}
+		env.AssertExpectations(t)
+	})
+
+	t.Run("invalid judgment output fails scoring and persists failed evaluation", func(t *testing.T) {
+		env := newEvaluateAnswerTestEnv()
+		input := EvaluateAnswerInput{EvaluationID: "evaluation-invalid-judgments", ChecklistID: "checklist-1", ModelAnswer: "answer"}
+		env.OnActivity(activities.ActivityWriteEvaluationInput, mock.Anything, mock.Anything).Return(nil).Once()
+		env.OnActivity(activities.ActivityLoadChecklist, mock.Anything, mock.Anything).
+			Return(activities.LoadChecklistResult{Checklist: succeededChecklist, Task: "task", Context: "context"}, nil).Once()
+		env.OnActivity(activities.ActivityJudgeAnswer, mock.Anything, mock.Anything).
+			Return(activities.JudgeAnswerResult{Judgments: []evalcore.Judgment{{QuestionID: "q1", Evidence: "Only one.", Answer: evalcore.AnswerYes}}}, nil).Once()
+		expectFailEvaluation(env, input.EvaluationID, input.ChecklistID)
+
+		env.ExecuteWorkflow(EvaluateAnswerWorkflow, input)
+		if env.GetWorkflowError() == nil {
+			t.Fatal("expected workflow failure")
+		}
+		env.AssertExpectations(t)
+	})
+
+	t.Run("succeed evaluation activity failure is persisted as failed", func(t *testing.T) {
+		env := newEvaluateAnswerTestEnv()
+		input := EvaluateAnswerInput{EvaluationID: "evaluation-succeed-fail", ChecklistID: "checklist-1", ModelAnswer: "answer"}
+		judgments := []evalcore.Judgment{
+			{QuestionID: "q1", Evidence: "Satisfied.", Answer: evalcore.AnswerYes},
+			{QuestionID: "q2", Evidence: "Missing.", Answer: evalcore.AnswerNo},
+		}
+		env.OnActivity(activities.ActivityWriteEvaluationInput, mock.Anything, mock.Anything).Return(nil).Once()
+		env.OnActivity(activities.ActivityLoadChecklist, mock.Anything, mock.Anything).
+			Return(activities.LoadChecklistResult{Checklist: succeededChecklist, Task: "task", Context: "context"}, nil).Once()
+		env.OnActivity(activities.ActivityJudgeAnswer, mock.Anything, mock.Anything).
+			Return(activities.JudgeAnswerResult{Judgments: judgments}, nil).Once()
+		env.OnActivity(activities.ActivitySucceedEvaluation, mock.Anything, mock.Anything).
+			Return(nonRetryableActivityError("terminal write failed")).Once()
+		expectFailEvaluation(env, input.EvaluationID, input.ChecklistID)
+
+		env.ExecuteWorkflow(EvaluateAnswerWorkflow, input)
+		if env.GetWorkflowError() == nil {
+			t.Fatal("expected workflow failure")
+		}
+		env.AssertExpectations(t)
+	})
+}
+
+func newEvaluateAnswerTestEnv() *testsuite.TestWorkflowEnvironment {
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(EvaluateAnswerWorkflow)
+	registerActivityNames(env)
+	return env
+}
+
+func expectFailEvaluation(env *testsuite.TestWorkflowEnvironment, evaluationID, checklistID string) {
+	env.OnActivity(activities.ActivityFailEvaluation, mock.Anything, mock.MatchedBy(func(in activities.FailEvaluationInput) bool {
+		return in.EvaluationID == evaluationID && in.ChecklistID == checklistID && in.ErrorMessage != ""
+	})).Return(nil).Once()
+}

@@ -34,6 +34,29 @@ func TestRubricRefinementSchemasAndPrompts(t *testing.T) {
 		}
 	})
 
+	t.Run("schemas constrain generated collection sizes", func(t *testing.T) {
+		for _, tc := range []struct {
+			name     string
+			schema   JSONSchema
+			property string
+			min      int
+			max      int
+		}{
+			{name: "dimensions", schema: DimensionAnalysisSchema(limits), property: "dimensions", min: 1, max: limits.MaxDimensions},
+			{name: "questions", schema: QuestionGenerationSchema(limits), property: "questions", min: 1, max: limits.MaxCandidatesPerDimension},
+			{name: "weights", schema: WeightAssignmentSchema(limits, 3), property: "weights", min: 3, max: 3},
+			{name: "splits", schema: QuestionSplittingSchema(limits, 4), property: "questions", min: 4, max: 4},
+			{name: "judgments", schema: BinaryJudgingSchema(5), property: "judgments", min: 5, max: 5},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				prop := tc.schema["properties"].(map[string]any)[tc.property].(map[string]any)
+				if prop["minItems"] != tc.min || prop["maxItems"] != tc.max {
+					t.Fatalf("schema %s %s min/max = %#v/%#v, want %d/%d", tc.name, tc.property, prop["minItems"], prop["maxItems"], tc.min, tc.max)
+				}
+			})
+		}
+	})
+
 	t.Run("output validation rejects structural violations", func(t *testing.T) {
 		if err := (DimensionAnalysisOutput{Dimensions: []evalcore.DraftDimension{{Name: "Correctness", Rubric: "Checks correctness.", Rationale: "Needed."}}}).Validate(); err != nil {
 			t.Fatalf("valid dimensions error = %v", err)

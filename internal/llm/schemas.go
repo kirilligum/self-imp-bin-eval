@@ -125,7 +125,9 @@ func QuestionGenerationSchema(limits evalcore.ChecklistLimits) JSONSchema {
 		"required":             []string{"questions"},
 		"properties": map[string]any{
 			"questions": map[string]any{
-				"type": "array",
+				"type":     "array",
+				"minItems": 1,
+				"maxItems": limits.MaxCandidatesPerDimension,
 				"items": map[string]any{
 					"type":                 "object",
 					"additionalProperties": false,
@@ -152,7 +154,9 @@ func WeightAssignmentSchema(limits evalcore.ChecklistLimits, candidateCount int)
 		"required":             []string{"weights"},
 		"properties": map[string]any{
 			"weights": map[string]any{
-				"type": "array",
+				"type":     "array",
+				"minItems": candidateCount,
+				"maxItems": candidateCount,
 				"items": map[string]any{
 					"type":                 "object",
 					"additionalProperties": false,
@@ -176,7 +180,9 @@ func QuestionSplittingSchema(limits evalcore.ChecklistLimits, splitCount int) JS
 		"required":             []string{"questions"},
 		"properties": map[string]any{
 			"questions": map[string]any{
-				"type": "array",
+				"type":     "array",
+				"minItems": splitCount,
+				"maxItems": splitCount,
 				"items": map[string]any{
 					"type":                 "object",
 					"additionalProperties": false,
@@ -198,7 +204,9 @@ func BinaryJudgingSchema(questionCount int) JSONSchema {
 		"required":             []string{"judgments"},
 		"properties": map[string]any{
 			"judgments": map[string]any{
-				"type": "array",
+				"type":     "array",
+				"minItems": questionCount,
+				"maxItems": questionCount,
 				"items": map[string]any{
 					"type":                 "object",
 					"additionalProperties": false,

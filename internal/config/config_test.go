@@ -82,6 +82,20 @@ func TestConfigValidation(t *testing.T) {
 		}
 	})
 
+	t.Run("allows public listen address only when explicitly enabled", func(t *testing.T) {
+		setRequiredEnv(t)
+		t.Setenv("BIN_EVAL_LISTEN_ADDR", "0.0.0.0:8080")
+		t.Setenv("BIN_EVAL_ALLOW_PUBLIC_BIND", "true")
+
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("Load() error = %v", err)
+		}
+		if cfg.ListenAddr != "0.0.0.0:8080" {
+			t.Fatalf("ListenAddr = %q", cfg.ListenAddr)
+		}
+	})
+
 	t.Run("loads checklist limit overrides", func(t *testing.T) {
 		setRequiredEnv(t)
 		t.Setenv("BIN_EVAL_MAX_DIMENSIONS", "7")
@@ -107,6 +121,19 @@ func TestConfigValidation(t *testing.T) {
 			t.Fatal("expected limit parse error")
 		}
 		if !strings.Contains(err.Error(), "BIN_EVAL_MAX_FINAL_QUESTIONS") {
+			t.Fatalf("error = %v, want limit name", err)
+		}
+	})
+
+	t.Run("rejects nonpositive checklist limit overrides", func(t *testing.T) {
+		setRequiredEnv(t)
+		t.Setenv("BIN_EVAL_MAX_SPLIT_COUNT", "0")
+
+		_, err := Load()
+		if err == nil {
+			t.Fatal("expected nonpositive limit error")
+		}
+		if !strings.Contains(err.Error(), "BIN_EVAL_MAX_SPLIT_COUNT") {
 			t.Fatalf("error = %v, want limit name", err)
 		}
 	})

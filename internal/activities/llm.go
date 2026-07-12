@@ -28,14 +28,22 @@ const (
 type Dependencies struct {
 	Artifacts    artifacts.Writer
 	LLM          llm.LLMClient
-	Store        *db.Store
+	Store        Store
 	ModelProfile string
+}
+
+type Store interface {
+	GetChecklist(ctx context.Context, checklistID string) (db.Checklist, error)
+	SucceedChecklist(ctx context.Context, checklistID string, dimensions []evalcore.Dimension, candidates []evalcore.CandidateQuestion, weights []evalcore.Weight, questions []evalcore.FinalQuestion) error
+	FailChecklist(ctx context.Context, checklistID, message string) error
+	SucceedEvaluation(ctx context.Context, evaluationID, checklistID string, judgments []evalcore.Judgment, score evalcore.ScoreResult) error
+	FailEvaluation(ctx context.Context, evaluationID, checklistID, message string) error
 }
 
 type Activities struct {
 	artifacts    artifacts.Writer
 	llm          llm.LLMClient
-	store        *db.Store
+	store        Store
 	modelProfile string
 }
 

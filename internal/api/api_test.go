@@ -31,15 +31,31 @@ func TestAPIContracts(t *testing.T) {
 
 	t.Run("invalid checklist request", func(t *testing.T) {
 		assertStatus(t, request(t, router, http.MethodPost, "/checklists", `{bad-json`), http.StatusBadRequest)
+		assertStatus(t, request(t, router, http.MethodPost, "/checklists", `{"task":"task","context":"context","extra":true}`), http.StatusBadRequest)
 		assertStatus(t, request(t, router, http.MethodPost, "/checklists", `{"task":" ","context":"context"}`), http.StatusBadRequest)
+		assertStatus(t, request(t, router, http.MethodPost, "/checklists", `{"task":"task","context":" "}`), http.StatusBadRequest)
+	})
+
+	t.Run("create checklist store and starter failures", func(t *testing.T) {
+		store.createChecklistErr = errors.New("database unavailable")
+		assertStatus(t, request(t, router, http.MethodPost, "/checklists", `{"task":"task","context":"context"}`), http.StatusInternalServerError)
+		store.createChecklistErr = nil
+
+		starter.createErr = errors.New("temporal unavailable")
+		assertStatus(t, request(t, router, http.MethodPost, "/checklists", `{"task":"task","context":"context"}`), http.StatusInternalServerError)
+		starter.createErr = nil
 	})
 
 	t.Run("get checklist shapes", func(t *testing.T) {
 		store.checklists["running"] = db.Checklist{ID: "running", Status: db.StatusRunning}
-		assertJSONFields(t, request(t, router, http.MethodGet, "/checklists/running", ""), map[string]any{"checklist_id": "running", "status": "running"})
+		resp := request(t, router, http.MethodGet, "/checklists/running", "")
+		assertJSONFields(t, resp, map[string]any{"checklist_id": "running", "status": "running"})
+		assertJSONAbsent(t, resp, "error_message", "questions", "weights")
 
 		store.checklists["failed"] = db.Checklist{ID: "failed", Status: db.StatusFailed, ErrorMessage: strPtr("bad")}
-		assertJSONFields(t, request(t, router, http.MethodGet, "/checklists/failed", ""), map[string]any{"checklist_id": "failed", "status": "failed", "error_message": "bad"})
+		resp = request(t, router, http.MethodGet, "/checklists/failed", "")
+		assertJSONFields(t, resp, map[string]any{"checklist_id": "failed", "status": "failed", "error_message": "bad"})
+		assertJSONAbsent(t, resp, "questions", "weights")
 
 		store.checklists["succeeded"] = db.Checklist{
 			ID:     "succeeded",
@@ -59,12 +75,15 @@ func TestAPIContracts(t *testing.T) {
 				{ID: "q1", Ordinal: 1, DimensionID: "d1", SourceCandidateID: "c2", Rationale: "important", Question: "Active?"},
 			},
 		}
-		resp := request(t, router, http.MethodGet, "/checklists/succeeded", "")
+		resp = request(t, router, http.MethodGet, "/checklists/succeeded", "")
 		assertStatus(t, resp, http.StatusOK)
 		var got map[string]any
 		decodeBody(t, resp, &got)
 		if got["status"] != "succeeded" || len(got["dimensions"].([]any)) != 1 || len(got["candidate_questions"].([]any)) != 2 || len(got["questions"].([]any)) != 1 || len(got["weights"].([]any)) != 2 {
 			t.Fatalf("unexpected checklist success body: %#v", got)
+		}
+		if _, exists := got["error_message"]; exists {
+			t.Fatalf("succeeded checklist included error_message: %#v", got)
 		}
 	})
 
@@ -81,12 +100,31 @@ func TestAPIContracts(t *testing.T) {
 		store.createEvaluationErr = nil
 	})
 
+	t.Run("invalid evaluation request and start failures", func(t *testing.T) {
+		assertStatus(t, request(t, router, http.MethodPost, "/evaluations", `{bad-json`), http.StatusBadRequest)
+		assertStatus(t, request(t, router, http.MethodPost, "/evaluations", `{"checklist_id":"succeeded","model_answer":"answer","extra":true}`), http.StatusBadRequest)
+		assertStatus(t, request(t, router, http.MethodPost, "/evaluations", `{"checklist_id":" ","model_answer":"answer"}`), http.StatusBadRequest)
+		assertStatus(t, request(t, router, http.MethodPost, "/evaluations", `{"checklist_id":"succeeded","model_answer":" "}`), http.StatusBadRequest)
+
+		store.createEvaluationErr = db.ErrNotFound
+		assertStatus(t, request(t, router, http.MethodPost, "/evaluations", `{"checklist_id":"missing","model_answer":"answer"}`), http.StatusNotFound)
+		store.createEvaluationErr = nil
+
+		starter.evaluateErr = errors.New("temporal unavailable")
+		assertStatus(t, request(t, router, http.MethodPost, "/evaluations", `{"checklist_id":"succeeded","model_answer":"answer"}`), http.StatusInternalServerError)
+		starter.evaluateErr = nil
+	})
+
 	t.Run("get evaluation shapes", func(t *testing.T) {
 		store.evaluations["running"] = db.Evaluation{ID: "running", Status: db.StatusRunning}
-		assertJSONFields(t, request(t, router, http.MethodGet, "/evaluations/running", ""), map[string]any{"evaluation_id": "running", "status": "running"})
+		resp := request(t, router, http.MethodGet, "/evaluations/running", "")
+		assertJSONFields(t, resp, map[string]any{"evaluation_id": "running", "status": "running"})
+		assertJSONAbsent(t, resp, "error_message", "satisfied_points", "judgments")
 
 		store.evaluations["failed"] = db.Evaluation{ID: "failed", Status: db.StatusFailed, ErrorMessage: strPtr("bad")}
-		assertJSONFields(t, request(t, router, http.MethodGet, "/evaluations/failed", ""), map[string]any{"evaluation_id": "failed", "status": "failed", "error_message": "bad"})
+		resp = request(t, router, http.MethodGet, "/evaluations/failed", "")
+		assertJSONFields(t, resp, map[string]any{"evaluation_id": "failed", "status": "failed", "error_message": "bad"})
+		assertJSONAbsent(t, resp, "satisfied_points", "judgments")
 
 		satisfied, total, rate := 4, 6, float64(4)/float64(6)
 		store.evaluations["succeeded"] = db.Evaluation{
@@ -98,12 +136,27 @@ func TestAPIContracts(t *testing.T) {
 			FailedQuestionIDs:   []string{"q3"},
 			Judgments:           []evalcore.Judgment{{QuestionID: "q2", Evidence: "yes evidence", Answer: evalcore.AnswerYes}},
 		}
-		resp := request(t, router, http.MethodGet, "/evaluations/succeeded", "")
+		resp = request(t, router, http.MethodGet, "/evaluations/succeeded", "")
 		assertStatus(t, resp, http.StatusOK)
 		var got map[string]any
 		decodeBody(t, resp, &got)
 		if got["satisfied_points"].(float64) != 4 || got["total_possible_points"].(float64) != 6 || len(got["judgments"].([]any)) != 1 {
 			t.Fatalf("unexpected evaluation success body: %#v", got)
+		}
+
+		store.evaluations["all-yes"] = db.Evaluation{
+			ID:                  "all-yes",
+			Status:              db.StatusSucceeded,
+			SatisfiedPoints:     &satisfied,
+			TotalPossiblePoints: &total,
+			ChecklistPassRate:   &rate,
+			FailedQuestionIDs:   nil,
+		}
+		resp = request(t, router, http.MethodGet, "/evaluations/all-yes", "")
+		assertStatus(t, resp, http.StatusOK)
+		decodeBody(t, resp, &got)
+		if failed, ok := got["failed_question_ids"].([]any); !ok || len(failed) != 0 {
+			t.Fatalf("failed_question_ids = %#v, want empty array", got["failed_question_ids"])
 		}
 	})
 
@@ -112,6 +165,11 @@ func TestAPIContracts(t *testing.T) {
 		store.getChecklistErr = errors.New("database unavailable")
 		assertStatus(t, request(t, router, http.MethodGet, "/checklists/running", ""), http.StatusInternalServerError)
 		store.getChecklistErr = nil
+
+		assertStatus(t, request(t, router, http.MethodGet, "/evaluations/missing", ""), http.StatusNotFound)
+		store.getEvaluationErr = errors.New("database unavailable")
+		assertStatus(t, request(t, router, http.MethodGet, "/evaluations/running", ""), http.StatusInternalServerError)
+		store.getEvaluationErr = nil
 	})
 }
 
@@ -163,6 +221,17 @@ func assertJSONFields(t *testing.T, resp *httptest.ResponseRecorder, want map[st
 	}
 }
 
+func assertJSONAbsent(t *testing.T, resp *httptest.ResponseRecorder, keys ...string) {
+	t.Helper()
+	var got map[string]any
+	decodeBody(t, resp, &got)
+	for _, key := range keys {
+		if _, exists := got[key]; exists {
+			t.Fatalf("field %s unexpectedly present in %#v", key, got)
+		}
+	}
+}
+
 func decodeBody(t *testing.T, resp *httptest.ResponseRecorder, out any) {
 	t.Helper()
 	if err := json.Unmarshal(resp.Body.Bytes(), out); err != nil {
@@ -175,8 +244,10 @@ func strPtr(s string) *string { return &s }
 type fakeStore struct {
 	checklists          map[string]db.Checklist
 	evaluations         map[string]db.Evaluation
+	createChecklistErr  error
 	getChecklistErr     error
 	createEvaluationErr error
+	getEvaluationErr    error
 }
 
 func newFakeStore() *fakeStore {
@@ -184,6 +255,9 @@ func newFakeStore() *fakeStore {
 }
 
 func (s *fakeStore) CreateChecklistForWorkflow(ctx context.Context) (string, error) {
+	if s.createChecklistErr != nil {
+		return "", s.createChecklistErr
+	}
 	s.checklists["checklist-1"] = db.Checklist{ID: "checklist-1", Status: db.StatusRunning, CreatedAt: time.Now()}
 	return "checklist-1", nil
 }
@@ -208,6 +282,9 @@ func (s *fakeStore) CreateEvaluationForWorkflow(ctx context.Context, checklistID
 }
 
 func (s *fakeStore) GetEvaluation(ctx context.Context, id string) (db.Evaluation, error) {
+	if s.getEvaluationErr != nil {
+		return db.Evaluation{}, s.getEvaluationErr
+	}
 	evaluation, ok := s.evaluations[id]
 	if !ok {
 		return db.Evaluation{}, db.ErrNotFound
@@ -222,9 +299,14 @@ type fakeStarter struct {
 	evaluatedID        string
 	evaluatedChecklist string
 	evaluatedAnswer    string
+	createErr          error
+	evaluateErr        error
 }
 
 func (s *fakeStarter) StartCreateChecklist(ctx context.Context, checklistID, task, contextText string) error {
+	if s.createErr != nil {
+		return s.createErr
+	}
 	s.createdChecklistID = checklistID
 	s.createdTask = task
 	s.createdContext = contextText
@@ -232,6 +314,9 @@ func (s *fakeStarter) StartCreateChecklist(ctx context.Context, checklistID, tas
 }
 
 func (s *fakeStarter) StartEvaluateAnswer(ctx context.Context, evaluationID, checklistID, modelAnswer string) error {
+	if s.evaluateErr != nil {
+		return s.evaluateErr
+	}
 	s.evaluatedID = evaluationID
 	s.evaluatedChecklist = checklistID
 	s.evaluatedAnswer = modelAnswer

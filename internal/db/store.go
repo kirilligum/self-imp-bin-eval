@@ -371,6 +371,16 @@ func (s *Store) SucceedEvaluation(ctx context.Context, evaluationID, checklistID
 	if err := evalcore.ValidateJudgments(checklist.Questions, judgments); err != nil {
 		return err
 	}
+	computedScore, err := evalcore.ScoreChecklist(checklist.Questions, judgments)
+	if err != nil {
+		return err
+	}
+	if !scoreResultsEqual(score, computedScore) {
+		return &evalcore.SemanticError{
+			Code:    evalcore.CodeInvalidJudgments,
+			Message: fmt.Sprintf("score does not match judgments for evaluation %s", evaluationID),
+		}
+	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -499,4 +509,19 @@ func mapTerminalTriggerError(err error) error {
 		return ErrConflict
 	}
 	return err
+}
+
+func scoreResultsEqual(a, b evalcore.ScoreResult) bool {
+	if a.SatisfiedPoints != b.SatisfiedPoints ||
+		a.TotalPossiblePoints != b.TotalPossiblePoints ||
+		a.ChecklistPassRate != b.ChecklistPassRate ||
+		len(a.FailedQuestionIDs) != len(b.FailedQuestionIDs) {
+		return false
+	}
+	for i := range a.FailedQuestionIDs {
+		if a.FailedQuestionIDs[i] != b.FailedQuestionIDs[i] {
+			return false
+		}
+	}
+	return true
 }

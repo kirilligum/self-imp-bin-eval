@@ -23,6 +23,8 @@ for script in \
   scripts/live_curl_example.sh \
   scripts/validate_litellm_responses.sh \
   scripts/validate_docs_curl.sh \
+  scripts/validate_traceability.sh \
+  scripts/validate_smoke_invariants.sh \
   scripts/docker-compose-local.sh \
   scripts/wait-for-tcp.sh; do
   [[ -x "$script" ]] || fail "script is missing or not executable: ${script}"

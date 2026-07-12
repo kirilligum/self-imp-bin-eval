@@ -2,6 +2,11 @@
 
 This document reformats the clarifying questions from the preceding conversation into auditable decision records.
 
+Decision status:
+
+- Decided: 1B, 3A with `max_final_questions=64`, 4A, 5B, 6A, 7A, 8A, 9A.
+- Still open: Question 2. More context was requested before selecting 2A or 2B.
+
 Terminology used below:
 
 - **Rubric refinement path**: the new checklist creation path described in `plans/bin-eval-rubric-refinement-dag-plan.md`, centered on `AnalyzeDimensions`, `GenerateQuestionsForDimension`, `AssignRefinements`, `SplitQuestion`, `BuildFinalChecklist`, and equal-count `ScoreChecklist`.
@@ -10,6 +15,7 @@ Terminology used below:
 - **Old weighted path**: current behavior where question weights are used as point multipliers in scoring. The updated plan says to delete this runtime path rather than wrap it.
 - **Local data reset**: resetting local Postgres data created by the development Compose stack so the new schema can be the only runtime data model.
 - **LiteLLM profile**: the local OpenAI-compatible LiteLLM configuration used by the service through the existing LLM client and environment variables.
+- **Checklist contract**: the JSON shape returned by `GET /checklists/{id}` for callers and curl scripts. In current code this is `checklistResponse` in `internal/api/router.go`, populated from `db.Checklist` in `internal/db/store.go`.
 
 ### 1.1 Question
 
@@ -42,13 +48,29 @@ The plan now requires one current data model and no old weighted-scoring compati
 
 I recommend **Option B** unless you know there is local data worth preserving. It best matches the direct-path requirement and avoids creating one-time archive tooling that may not be used.
 
+Decision: **Selected Option B**. Existing local Postgres checklist/evaluation data can be reset; no archive path is required.
+
 ### 2.1 Question
 
 Should successful API responses fully remove `weights` and expose `refinements` plus final `questions` as the only checklist contract?
 
 ### 2.2 Context & clarification
 
-The existing API response shape is implemented under `internal/api/router.go` and store mapping code. The plan says `GET /checklists/{id}` should return `dimensions`, `candidate_questions`, `refinements`, and final `questions`. It also adds `REQ-045`, which rejects an old weighted-scoring response path. This is a breaking response contract change for any caller that still reads `weights`.
+The existing API response shape is implemented by `checklistResponse` in `internal/api/router.go`. Today that struct has:
+
+```go
+type checklistResponse struct {
+    ChecklistID  string                       `json:"checklist_id"`
+    Status       string                       `json:"status"`
+    ErrorMessage *string                      `json:"error_message,omitempty"`
+    Questions    []evalcore.CandidateQuestion `json:"questions,omitempty"`
+    Weights      []evalcore.Weight            `json:"weights,omitempty"`
+}
+```
+
+The `weights` field is populated in `getChecklist` from `db.Checklist.Weights`. That store field is loaded from the current `weights` table in `internal/db/store.go`. Removing `weights` means removing this field from the successful `GET /checklists/{id}` JSON response, replacing the store-side state behind it with `question_refinements`, and exposing `refinements` plus final `questions` instead.
+
+This is what "checklist contract" means here: the response contract for a succeeded checklist returned to curl/API callers. It does not mean the four HTTP routes change. `POST /checklists`, `GET /checklists/{id}`, `POST /evaluations`, and `GET /evaluations/{id}` stay the same; the succeeded checklist response body changes.
 
 ### 2.3 Options
 
@@ -73,6 +95,8 @@ The existing API response shape is implemented under `internal/api/router.go` an
 
 I recommend **Option A**. The repository is being driven as a local service and curl workflow, and the user preference is explicit: no legacy, no fallback paths, and no duplicate contracts.
 
+Decision: **Open**. More context was requested before choosing whether to remove `weights` from `GET /checklists/{id}` now.
+
 ### 3.1 Question
 
 What hard fan-out limits should the implementation enforce for dimensions, candidates, splits, and final questions?
@@ -83,14 +107,14 @@ Fan-out limits bound LLM cost, Temporal activity count, persisted rows, and chec
 
 ### 3.3 Options
 
-- `Option A`: Balanced central limits
+- `Option A`: Balanced central limits with a 64-question ceiling
   - **Rubrics**: `Conf:70% | Invest:i | Blast:i | Reversal:ii | Fit:i | Reuse:i | Obs:i | Surface:i | Perf:i`
-  - **Approach**: Define one central limit struct or constants with `max_dimensions=4`, `max_candidates_per_dimension=6`, `max_split_count=4`, and `max_final_questions=32`.
-  - **Example**: `evalcore.ChecklistLimits{MaxDimensions:4, MaxCandidatesPerDimension:6, MaxSplitCount:4, MaxFinalQuestions:32}`.
-  - **Architecture**: Centralized limits keep schema, validation, and workflow behavior aligned.
-  - **SSoT**: `internal/evalcore` owns the canonical limits; LLM schemas and workflows consume those values or mirrored constants tested against them.
-  - **System limits**: `max_dimensions=4`, `max_candidates_per_dimension=6`, `max_split_count=4`, `max_final_questions=32`.
-  - **Trade-offs**: Good coverage budget without excessive fan-out; numbers are still empirical.
+  - **Approach**: Define one central limit struct with defaults `max_dimensions=4`, `max_candidates_per_dimension=6`, `max_split_count=4`, and `max_final_questions=64`; load overrides from one config source so limits can be adjusted after diagnostics show real limit pressure.
+  - **Example**: `evalcore.ChecklistLimits{MaxDimensions:4, MaxCandidatesPerDimension:6, MaxSplitCount:4, MaxFinalQuestions:64}`.
+  - **Architecture**: Centralized limits keep schema, validation, workflow behavior, logs, and smoke diagnostics aligned.
+  - **SSoT**: `internal/evalcore` owns the canonical limit struct and validation; `internal/config` owns configured values; LLM schemas and workflows consume those values or mirrored constants tested against them.
+  - **System limits**: defaults are `max_dimensions=4`, `max_candidates_per_dimension=6`, `max_split_count=4`, `max_final_questions=64`.
+  - **Trade-offs**: Higher coverage budget with bounded fan-out; diagnostics are required so the limit can be tuned when hit.
 - `Option B`: Conservative MVP limits
   - **Rubrics**: `Conf:70% | Invest:ii | Blast:ii | Reversal:iii | Fit:ii | Reuse:ii | Obs:ii | Surface:i | Perf:ii`
   - **Approach**: Use smaller limits: `max_dimensions=3`, `max_candidates_per_dimension=4`, `max_split_count=3`, and `max_final_questions=16`.
@@ -101,16 +125,18 @@ Fan-out limits bound LLM cost, Temporal activity count, persisted rows, and chec
   - **Trade-offs**: Lower cost and faster smoke tests, but may under-cover complex tasks.
 - `Option C`: Larger coverage limits
   - **Rubrics**: `Conf:50% | Invest:iii | Blast:iii | Reversal:i | Fit:iii | Reuse:iii | Obs:iii | Surface:i | Perf:iii`
-  - **Approach**: Use larger limits: `max_dimensions=5`, `max_candidates_per_dimension=8`, `max_split_count=4`, and `max_final_questions=48`.
+  - **Approach**: Use larger limits: `max_dimensions=5`, `max_candidates_per_dimension=8`, `max_split_count=4`, and `max_final_questions=96`.
   - **Example**: A complex task can produce broader rubric coverage before the final budget stops the workflow.
   - **Architecture**: Same centralized limit implementation, with higher activity and row counts.
   - **SSoT**: One evalcore-owned limit definition.
-  - **System limits**: `max_dimensions=5`, `max_candidates_per_dimension=8`, `max_split_count=4`, `max_final_questions=48`.
+  - **System limits**: `max_dimensions=5`, `max_candidates_per_dimension=8`, `max_split_count=4`, `max_final_questions=96`.
   - **Trade-offs**: Better coverage for large tasks, more LLM calls, slower local curl path.
 
 ### 3.4 Recommendation
 
 I recommend **Option A**. It is the best balance for a local MVP: bounded enough to keep curl usable, large enough to make binary scoring more meaningful.
+
+Decision: **Selected Option A with `max_final_questions=64`**. The implementation should record limit diagnostics whenever validation rejects output for exceeding a limit, including `limit_name`, `configured_limit`, `observed_count`, `checklist_id`, and prompt/workflow stage where available. Limits should be adjustable through one config path after diagnostics show which limit is binding.
 
 ### 4.1 Question
 
@@ -118,14 +144,14 @@ Should semantically invalid model output fail the workflow immediately, with no 
 
 ### 4.2 Context & clarification
 
-Semantic validation means Go checks parsed structured output against invariants that JSON schema cannot fully express: every candidate has one refinement, split counts match exactly, no unknown IDs appear, and final question budgets are respected. The relevant code will live around `internal/llm/schemas.go`, `internal/evalcore/validate.go`, and Temporal activity error handling.
+Semantic validation means deterministic Go checks over parsed structured output. It is not an extra LLM call and not regex-based natural-language judging. JSON schema checks shape; Go checks cross-field and cross-object invariants that schema cannot fully express: every candidate has one refinement, split counts match exactly, no unknown IDs appear, final question budgets are respected, required text fields are non-blank, and lifecycle failures are classified as non-retryable semantic errors. The relevant code will live around `internal/llm/schemas.go`, `internal/evalcore/validate.go`, and Temporal activity error handling.
 
 ### 4.3 Options
 
 - `Option A`: Fail-fast at the activity boundary
   - **Rubrics**: `Conf:80% | Invest:i | Blast:i | Reversal:ii | Fit:i | Reuse:i | Obs:i | Surface:i | Perf:na`
-  - **Approach**: Validate each LLM response inside the activity and return a non-retryable semantic error for invalid model output.
-  - **Example**: `AssignRefinements` returns non-retryable failure if a candidate ID is missing or duplicated.
+  - **Approach**: Validate each LLM response inside the activity using schema parsing plus deterministic Go invariant checks, then return a non-retryable semantic error for invalid model output.
+  - **Example**: `AssignRefinements` returns non-retryable failure if a candidate ID is missing or duplicated; `SplitQuestion` returns non-retryable failure if it returns three questions when `refinement_count` requested four.
   - **Architecture**: Keeps external-boundary validation near the LLM call while leaving deterministic final assembly in evalcore.
   - **SSoT**: Validation rules live in shared evalcore/LLM validation functions, not repeated in workflow code.
   - **System limits**: Unknown - not available in local context.
@@ -142,6 +168,8 @@ Semantic validation means Go checks parsed structured output against invariants 
 ### 4.4 Recommendation
 
 I recommend **Option A**, backed by shared validation helpers so logic is not duplicated. It best matches fail-fast behavior at external boundaries while keeping the deterministic rules centralized.
+
+Decision: **Selected Option A**. Semantic validation is deterministic Go validation of schema-parsed data and cross-object invariants. There is no extra repair LLM call and no regex attempt to judge semantic natural-language equivalence.
 
 ### 5.1 Question
 
@@ -180,7 +208,9 @@ Duplicate and overlap control affects score validity. If final questions repeat 
 
 ### 5.4 Recommendation
 
-I recommend **Option A** for implementation, with a light prompt instruction to delete duplicates. It is the smallest deterministic guard that supports the plan without adding another stage.
+I recommended **Option A** before your decision, but your reasoning is stronger for this MVP: exact duplicates are unlikely with long probabilistic LLM-generated question text, and semantic duplication is better handled in the refinement prompt by assigning `refinement_count=0` to duplicates.
+
+Decision: **Selected Option B**. The implementation should rely on the refinement assignment prompt to mark semantic duplicates for removal with `refinement_count=0`. It should not add exact duplicate validation or a separate dedupe stage in this MVP.
 
 ### 6.1 Question
 
@@ -221,6 +251,8 @@ The plan currently sets `EVAL-001` thresholds: good answer mean pass rate `>= 0.
 
 I recommend **Option A**. The current thresholds are reasonable for an MVP and keep the implementation honest. If they fail, we should inspect artifacts and fix prompts or fixtures, not weaken the contract immediately.
 
+Decision: **Selected Option A**. Keep the thresholds as hard gates and record diagnostics in smoke output, including checklist ID, evaluation ID, final question count, judgment count, pass rate, failed question IDs, limit hit counts, and per-case good/bad classification.
+
 ### 7.1 Question
 
 Should question-count bounds live only in schema and Go validation, with no fixed required count in prompt text?
@@ -251,6 +283,8 @@ You asked to remove the required number of questions from the generation prompt.
 ### 7.4 Recommendation
 
 I recommend **Option A**. It follows your instruction most directly: no required question count in the prompt, with structural bounds handled by schema and validation.
+
+Decision: **Selected Option A**. Numeric count bounds live in schema/config/Go validation, not prompt prose.
 
 ### 8.1 Question
 
@@ -291,6 +325,8 @@ The plan currently exposes `dimensions`, `candidate_questions`, `refinements`, a
 
 I recommend **Option A**. This project is currently an operator/debuggable eval service, and the generated rationale trail is important for trusting and improving the rubric pipeline.
 
+Decision: **Selected Option A**. `GET /checklists/{id}` should expose all generated structured metadata, including rationales.
+
 ### 9.1 Question
 
 Which LiteLLM model profile should the new multi-call DAG use?
@@ -329,3 +365,5 @@ The existing service uses a local OpenAI-compatible LiteLLM setup and environmen
 ### 9.4 Recommendation
 
 I recommend **Option A**. Reuse the current LiteLLM profile first and keep model selection as one existing configuration path.
+
+Decision: **Selected Option A**. Reuse the current LiteLLM model profile for all rubric refinement prompt families.

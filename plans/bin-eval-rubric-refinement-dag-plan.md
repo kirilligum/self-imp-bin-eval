@@ -44,6 +44,15 @@
 - Topic: One canonical implementation path
   - Verdict: DECISION
   - Rationale: The implementation should delete obsolete weighted-scoring code paths and replace them with the rubric refinement path directly. The runtime should have one current checklist model, one response shape, and one scoring path.
+- Topic: Rubric refinement limits
+  - Verdict: DECISION
+  - Rationale: Checklist creation should use one central configurable limit set with defaults `max_dimensions=4`, `max_candidates_per_dimension=6`, `max_split_count=4`, and `max_final_questions=64`. Limit failures should produce structured diagnostics so the limits can be adjusted from evidence.
+- Topic: Duplicate handling
+  - Verdict: DECISION
+  - Rationale: The MVP should not add a separate dedupe stage or exact duplicate detector. The refinement assignment prompt should instruct the model to assign `refinement_count=0` to semantically duplicate candidates.
+- Topic: Model-output semantic validation
+  - Verdict: DECISION
+  - Rationale: Semantic validation means deterministic Go checks over schema-parsed output and cross-object invariants. It is not an extra LLM repair call and not regex-based natural-language judgment.
 
 ## 3. PRD / stakeholder and system needs
 
@@ -51,7 +60,7 @@
 - Users: Internal engineers evaluating model answers who need reproducible, inspectable, fine-grained binary question coverage.
 - Value: Rubric-guided coverage, automatic deletion of weak candidates, explicit splitting of broad or important candidates into atomic final questions, and simple equal-count scoring over final yes/no judgments.
 - Business goals: Improve evaluation accuracy and diagnosability while retaining the running local service, persistent workflow architecture, and direct curl workflow.
-- Success metrics: Final checklists include dimensions, candidate questions, refinements, and final atomic questions; no final checklist question has a multiplier weight; good smoke answers score high, bad smoke answers score low; `make test-e2e` and `make test-live-curl` return succeeded evaluations with final-question counts and judgment coverage.
+- Success metrics: Final checklists include dimensions, candidate questions, refinements, and final atomic questions; no final checklist question has a multiplier weight; good smoke answers score high, bad smoke answers score low; `make test-e2e` and `make test-live-curl` return succeeded evaluations with final-question counts, judgment coverage, score diagnostics, and limit diagnostics.
 - Scope: LLM schemas and prompts for dimension analysis, per-dimension question generation, refinement assignment, and split generation; evalcore final checklist construction and equal scoring; Temporal DAG fan-out/fan-in workflow; Postgres migration and store updates; API response contract updates; Garage artifact key additions; docs and smoke script updates.
 - Non-goals: Public API exposure, auth, UI, learned calibration, multi-judge voting, category-level score reporting, additional model-provider routing, schema repair prompts, external paper parsing, and public deployment.
 - Dependencies: Go toolchain, Temporal Go SDK, Postgres, Garage, Docker Compose, local LiteLLM Responses API at `http://127.0.0.1:4000/v1/responses`, existing Makefile commands, and existing smoke fixtures under `fixtures/smoke/cases/`.
@@ -67,7 +76,7 @@
 - REQ-003 (func): Question generation prompts contain no fixed required question count and no comparative strong/weak wording. Acceptance: prompt tests reject those phrases in `BuildQuestionGenerationRequest`.
 - REQ-004 (func): Prompt text does not instruct the model to return a literal JSON shape. Acceptance: prompt tests reject `Return only JSON shaped as` and equivalent schema examples in new prompt builders.
 - REQ-005 (func): A shared question requirements prompt fragment is used by both dimension question generation and split question generation. Acceptance: tests confirm both prompt builders include the same exported fragment value.
-- REQ-006 (func): Refinement assignment returns one refinement object for every candidate question ID. Acceptance: missing, duplicate, unknown, blank-rationale, or out-of-range refinement rows fail validation.
+- REQ-006 (func): Refinement assignment returns one refinement object for every candidate question ID and marks semantic duplicates with `refinement_count=0`. Acceptance: missing, duplicate, unknown, blank-rationale, or out-of-range refinement rows fail validation; prompt tests include duplicate-removal instructions.
 - REQ-007 (func): Refinement count semantics are `0` delete, `1` keep, and `2..4` split into that many final questions. Acceptance: final checklist construction drops `0`, keeps `1`, and replaces `2..4` with split outputs of exact requested length.
 - REQ-008 (func): Split generation runs once per candidate with `refinement_count > 1`. Acceptance: each split activity receives one source candidate and returns exactly the requested count of specific binary questions.
 - REQ-009 (func): Final checklist questions are atomic and equal-value. Acceptance: evaluation scoring counts one point per final question and stores no point multiplier on final questions.
@@ -77,7 +86,7 @@
 
 ### Interface/API requirements
 
-- REQ-020 (int): `GET /checklists/{id}` success response returns `dimensions`, `candidate_questions`, `refinements`, and final `questions`. Acceptance: each field has stable JSON names and arrays are present on succeeded checklists.
+- REQ-020 (int): `GET /checklists/{id}` success response returns `dimensions`, `candidate_questions`, `refinements`, and final `questions`. Acceptance: each field has stable JSON names and arrays are present on succeeded checklists; the current `weights` response field is removed from the succeeded checklist response.
 - REQ-021 (int): `GET /evaluations/{id}` success response keeps `satisfied_points`, `total_possible_points`, `checklist_pass_rate`, `failed_question_ids`, and `judgments`. Acceptance: score fields reflect equal-count final questions.
 - REQ-022 (int): New LLM prompt names are stable Garage artifact identifiers. Acceptance: artifact keys include `dimension_analysis`, `question_generation/<dimension_id>`, `refinement_assignment`, and `question_splitting/<source_question_id>`.
 - REQ-023 (int): Strict JSON schemas are the only structured-output contract. Acceptance: prompt text omits literal JSON object examples and schemas define all required output fields.
@@ -93,7 +102,7 @@
 
 ### Non-functional requirements
 
-- REQ-040 (reliability): The workflow limits fan-out to bounded counts. Acceptance: validation rejects more than the configured maximum dimensions, candidates per dimension, split count, or final questions.
+- REQ-040 (reliability): The workflow limits fan-out to bounded counts. Acceptance: validation rejects more than the configured maximum dimensions, candidates per dimension, split count, or final questions; default limits are `max_dimensions=4`, `max_candidates_per_dimension=6`, `max_split_count=4`, and `max_final_questions=64`; limit failures record `limit_name`, `configured_limit`, `observed_count`, `checklist_id`, and workflow/prompt stage where available.
 - REQ-041 (security): Prompts and logs do not include secrets. Acceptance: new tests keep secret redaction behavior and no prompt builder reads secret env vars.
 - REQ-042 (nfr): The pipeline remains deterministic after LLM outputs are parsed. Acceptance: Go-owned ID assignment, final question ordering, and scoring are deterministic for fixed LLM outputs.
 - REQ-043 (reliability): Invalid model output is non-retryable and persists failed workflow status. Acceptance: schema and semantic validation errors map to existing non-retryable Temporal errors.
@@ -102,11 +111,11 @@
 
 ### Error handling and telemetry expectations
 
-- Empty dimensions, empty candidate question lists for all dimensions, all refinements deleted, split count mismatches, and over-budget final question counts fail checklist creation with terminal failed status.
+- Empty dimensions, empty candidate question lists for all dimensions, all refinements deleted, split count mismatches, and over-budget final question counts fail checklist creation with terminal failed status and structured diagnostics.
 - Infrastructure failures retain existing bounded Temporal retry behavior.
 - Semantic model-output failures remain non-retryable.
-- Logs include prompt name, checklist ID, evaluation ID where applicable, and error class, but do not log raw prompts or answers.
-- Smoke output includes final question count, judgment count, score fields, and failed final question IDs.
+- Logs include prompt name, checklist ID, evaluation ID where applicable, error class, and limit diagnostics when a configured limit is hit, but do not log raw prompts or answers.
+- Smoke output includes checklist ID, evaluation ID, final question count, judgment count, score fields, failed final question IDs, per-case good/bad classification, and limit-hit counts.
 - Obsolete weighted checklist behavior is removed rather than adapted, hidden, or kept behind a mode switch.
 
 ### Architecture diagram
@@ -165,11 +174,11 @@ C4-style ASCII representation:
 
 ### Risk register
 
-- Risk: Fan-out increases LLM cost and latency. Trigger: final question count or workflow duration exceeds thresholds. Mitigation: bounded dimension, candidate, split, and final-question limits with smoke metrics.
-- Risk: Rubric decomposition creates overlapping dimensions. Trigger: duplicate final questions or weak good/bad separation. Mitigation: refinement assignment deletes duplicates before final checklist construction; no separate dedupe stage is added in this plan.
+- Risk: Fan-out increases LLM cost and latency. Trigger: final question count or workflow duration exceeds thresholds. Mitigation: bounded dimension, candidate, split, and final-question limits with smoke metrics and structured limit-hit diagnostics.
+- Risk: Rubric decomposition creates overlapping dimensions. Trigger: duplicate final questions or weak good/bad separation. Mitigation: refinement assignment prompt marks semantic duplicates with `refinement_count=0`; no separate dedupe stage or exact duplicate detector is added in this plan.
 - Risk: API response changes break docs. Trigger: `scripts/validate_docs_curl.sh` or smoke scripts fail. Mitigation: update docs and scripts in the API phase with executable contract coverage.
 - Risk: Existing local data has old weighted checklists. Trigger: migrations encounter rows without dimensions. Mitigation: local development data is reset before applying the new migration; the codebase keeps only the new canonical data model.
-- Risk: Split outputs are less atomic than source questions. Trigger: split validation accepts multi-part questions. Mitigation: prompt requirements and semantic validation reject blank output; later quality evals inspect final question granularity.
+- Risk: Split outputs are less atomic than source questions. Trigger: split validation accepts multi-part questions. Mitigation: prompt requirements and deterministic semantic validation reject schema and invariant violations; quality eval diagnostics inspect final question granularity.
 
 ### Suspension/resumption criteria
 
@@ -195,7 +204,7 @@ Lifecycle evidence:
 Plan-and-Solve subtasks:
 
 - `P00.S01 Add failing coverage for rubric and refinement prompt contracts`
-  - Action: Add `// TEST-001` coverage in `internal/llm/schema_test.go` for dimension schema, refinement schema, split schema, shared question requirements fragment reuse, absence of fixed question counts, absence of comparative strong/weak wording, and absence of literal JSON shape examples.
+  - Action: Add `// TEST-001` coverage in `internal/llm/schema_test.go` for dimension schema, refinement schema, split schema, shared question requirements fragment reuse, absence of fixed question counts, absence of comparative strong/weak wording, absence of literal JSON shape examples, and refinement instructions that mark semantic duplicates with `refinement_count=0`.
   - Why now: Prompt and schema semantics must be pinned before adding workflow behavior.
   - Files/surfaces: `internal/llm/schema_test.go`.
   - Requirement link: REQ-001, REQ-002, REQ-003, REQ-004, REQ-005, REQ-006, REQ-007, REQ-008, REQ-020, REQ-023.
@@ -207,7 +216,7 @@ Plan-and-Solve subtasks:
   - Stop/escalate condition: Stop if prompt terminology for refinement count is rejected.
   - Unlocks: P00.S02
 - `P00.S02 Implement rubric and refinement prompt contracts`
-  - Action: Add `QuestionRequirementsPrompt`, `BuildDimensionAnalysisRequest`, updated per-dimension `BuildQuestionGenerationRequest`, `BuildRefinementAssignmentRequest`, and `BuildQuestionSplittingRequest`; add schemas and output validators for dimensions, refinements, and split questions.
+  - Action: Add `QuestionRequirementsPrompt`, `BuildDimensionAnalysisRequest`, updated per-dimension `BuildQuestionGenerationRequest`, `BuildRefinementAssignmentRequest`, and `BuildQuestionSplittingRequest`; add schemas and deterministic Go output validators for dimensions, refinements, and split questions.
   - Why now: Workflow and activity phases need typed request builders.
   - Files/surfaces: `internal/llm/prompts.go`, `internal/llm/schemas.go`, `internal/evalcore/types.go`, `internal/artifacts/keys.go`.
   - Requirement link: REQ-001, REQ-002, REQ-003, REQ-004, REQ-005, REQ-006, REQ-007, REQ-008, REQ-020, REQ-022, REQ-023, REQ-040.
@@ -216,7 +225,7 @@ Plan-and-Solve subtasks:
   - Command/procedure: `go test ./internal/llm -run TestRubricRefinementSchemasAndPrompts -count=1`
   - Expected result: Exit 0 with schema and prompt contract coverage passing.
   - Evidence produced: prompt/schema code diff and passing output.
-  - Stop/escalate condition: Stop if strict schema cannot represent dynamic split count; handle exact split count in Go validation.
+  - Stop/escalate condition: Stop if strict schema cannot represent dynamic split count; handle exact split count and other cross-object invariants in deterministic Go validation.
   - Unlocks: P00.S03
 - `P00.S03 Confirm LLM contract structure needs no refactor`
   - Action: Inspect new prompt builders for duplicated question requirements text and move any duplicated rule text into the shared fragment.
@@ -268,7 +277,7 @@ Lifecycle evidence:
 Plan-and-Solve subtasks:
 
 - `P01.S01 Add failing coverage for final checklist construction and equal scoring`
-  - Action: Add `// TEST-002` coverage for `BuildFinalChecklist`, refinement validation, exact split count matching, deterministic final question IDs, all-deleted failure, over-budget failure, and equal-count `ScoreChecklist`.
+  - Action: Add `// TEST-002` coverage for `BuildFinalChecklist`, refinement validation, exact split count matching, deterministic final question IDs, all-deleted failure, over-budget failure with limit diagnostics, configured `max_final_questions=64`, and equal-count `ScoreChecklist`.
   - Why now: Domain semantics must fail before replacing weighted scoring.
   - Files/surfaces: `internal/evalcore/refinement_test.go`, `internal/evalcore/score_test.go`.
   - Requirement link: REQ-006, REQ-007, REQ-008, REQ-009, REQ-031, REQ-032, REQ-033, REQ-034, REQ-040, REQ-042.
@@ -280,7 +289,7 @@ Plan-and-Solve subtasks:
   - Stop/escalate condition: Stop if an owner decision changes the target scoring semantics.
   - Unlocks: P01.S02
 - `P01.S02 Implement final checklist construction and equal scoring`
-  - Action: Add evalcore types for dimensions, candidate questions with dimension IDs, refinements, split outputs, and final questions; implement validation and deterministic final question ID assignment; update scoring to count final questions equally.
+  - Action: Add evalcore types for dimensions, candidate questions with dimension IDs, refinements, split outputs, final questions, `ChecklistLimits`, and limit diagnostics; implement validation and deterministic final question ID assignment; update scoring to count final questions equally.
   - Why now: Persistence and workflow phases need stable domain functions.
   - Files/surfaces: `internal/evalcore/types.go`, `internal/evalcore/ids.go`, `internal/evalcore/active.go`, `internal/evalcore/validate.go`, `internal/evalcore/score.go`.
   - Requirement link: REQ-006, REQ-007, REQ-008, REQ-009, REQ-010, REQ-031, REQ-032, REQ-033, REQ-034, REQ-040, REQ-042, REQ-043.
@@ -341,7 +350,7 @@ Lifecycle evidence:
 Plan-and-Solve subtasks:
 
 - `P02.S01 Add failing coverage for rubric refinement persistence`
-  - Action: Add `// TEST-003` integration coverage for applying migrations, inserting dimensions, candidate questions, refinements, final questions, evaluations, judgments, and reading a full checklist with traceability links.
+  - Action: Add `// TEST-003` integration coverage for applying migrations after local data reset, inserting dimensions, candidate questions, refinements, final questions, evaluations, judgments, and reading a full checklist with traceability links.
   - Why now: Schema changes must be pinned before migration implementation.
   - Files/surfaces: `internal/db/db_integration_test.go`.
   - Requirement link: REQ-030, REQ-031, REQ-032, REQ-033, REQ-034, REQ-042.
@@ -425,7 +434,7 @@ Phase goal: Checklist creation uses the new Temporal DAG while evaluation judges
 
 Scope and objectives, including impacted `REQ-###`: REQ-001, REQ-002, REQ-006, REQ-007, REQ-008, REQ-009, REQ-010, REQ-022, REQ-035, REQ-040, REQ-043.
 
-Impacted surfaces: `internal/activities/llm.go`, `internal/activities/llm_test.go`, `internal/activities/register.go`, `internal/workflows/create_checklist.go`, `internal/workflows/evaluate_answer.go`, `internal/workflows/create_checklist_test.go`, `internal/workflows/evaluate_answer_test.go`.
+Impacted surfaces: `internal/config/config.go`, `internal/config/config_test.go`, `cmd/bin-eval-api/main.go`, `internal/api/router.go`, `internal/activities/llm.go`, `internal/activities/llm_test.go`, `internal/activities/register.go`, `internal/workflows/create_checklist.go`, `internal/workflows/evaluate_answer.go`, `internal/workflows/create_checklist_test.go`, `internal/workflows/evaluate_answer_test.go`.
 
 Lifecycle evidence:
 - Requirements evidence: workflow and activity requirements.
@@ -450,7 +459,7 @@ Plan-and-Solve subtasks:
   - Stop/escalate condition: Stop if activity granularity needs fewer LLM calls.
   - Unlocks: P03.S02
 - `P03.S02 Implement rubric refinement LLM activities`
-  - Action: Add activity constants, input/output structs, registrations, and methods for `AnalyzeDimensions`, `GenerateQuestionsForDimension`, `AssignRefinements`, and `SplitQuestion`; update `JudgeAnswer` to use final questions only.
+  - Action: Add activity constants, input/output structs, registrations, and methods for `AnalyzeDimensions`, `GenerateQuestionsForDimension`, `AssignRefinements`, and `SplitQuestion`; validate model output through deterministic Go validators at activity boundaries; update `JudgeAnswer` to use final questions only.
   - Why now: Workflow code depends on registered activities.
   - Files/surfaces: `internal/activities/llm.go`, `internal/activities/register.go`.
   - Requirement link: REQ-001, REQ-002, REQ-006, REQ-007, REQ-008, REQ-010, REQ-022, REQ-035, REQ-043.
@@ -462,7 +471,7 @@ Plan-and-Solve subtasks:
   - Stop/escalate condition: Stop if final question payload still contains refinement counts.
   - Unlocks: P03.S03
 - `P03.S03 Add failing coverage for rubric refinement workflow DAG`
-  - Action: Add `// TEST-006` workflow tests that assert dimension analysis precedes fan-out question generation, refinement assignment fans in all candidates, split activities run for counts greater than one, final checklist persistence receives final questions, and failures persist terminal failed status.
+  - Action: Add `// TEST-006` workflow tests that assert dimension analysis precedes fan-out question generation, refinement assignment fans in all candidates, split activities run for counts greater than one, final checklist persistence receives final questions, limit failures include diagnostics, and failures persist terminal failed status.
   - Why now: DAG ordering is the behavior-changing workflow contract.
   - Files/surfaces: `internal/workflows/create_checklist_test.go`, `internal/workflows/evaluate_answer_test.go`.
   - Requirement link: REQ-001, REQ-002, REQ-007, REQ-008, REQ-009, REQ-010, REQ-040, REQ-043.
@@ -474,9 +483,9 @@ Plan-and-Solve subtasks:
   - Stop/escalate condition: Stop if Temporal testsuite cannot represent needed fan-out ordering.
   - Unlocks: P03.S04
 - `P03.S04 Implement rubric refinement workflow DAG`
-  - Action: Rewrite `CreateChecklistWorkflow` to write inputs, analyze dimensions, fan out question generation, assign refinements, fan out splitting, build final checklist, validate budgets, and persist success; update `EvaluateAnswerWorkflow` to load final questions and score equally.
+  - Action: Add optional limit config parsing in `internal/config`, pass configured limits through checklist workflow start input, rewrite `CreateChecklistWorkflow` to write inputs, analyze dimensions, fan out question generation, assign refinements, fan out splitting, build final checklist with configured limits, validate budgets, emit limit diagnostics on failures, and persist success; update `EvaluateAnswerWorkflow` to load final questions and score equally.
   - Why now: Activities and domain/persistence layers are available.
-  - Files/surfaces: `internal/workflows/create_checklist.go`, `internal/workflows/evaluate_answer.go`.
+  - Files/surfaces: `internal/config/config.go`, `internal/config/config_test.go`, `cmd/bin-eval-api/main.go`, `internal/api/router.go`, `internal/workflows/create_checklist.go`, `internal/workflows/evaluate_answer.go`.
   - Requirement link: REQ-001, REQ-002, REQ-007, REQ-008, REQ-009, REQ-010, REQ-040, REQ-043.
   - Verification link: TEST-006.
   - Verification mode: GREEN.
@@ -535,7 +544,7 @@ Lifecycle evidence:
 Plan-and-Solve subtasks:
 
 - `P04.S01 Add failing coverage for rubric refinement API responses`
-  - Action: Add `// TEST-007` API tests for checklist success responses containing dimensions, candidate questions, refinements, and final questions; add evaluation success tests for equal-count score fields.
+  - Action: Add `// TEST-007` API tests for checklist success responses containing dimensions, candidate questions, refinements, rationales, and final questions; assert succeeded checklist responses omit `weights`; add evaluation success tests for equal-count score fields.
   - Why now: API response shape must be pinned before script and docs changes.
   - Files/surfaces: `internal/api/api_test.go`.
   - Requirement link: REQ-011, REQ-020, REQ-021, REQ-045.
@@ -547,7 +556,7 @@ Plan-and-Solve subtasks:
   - Stop/escalate condition: Stop if response field names need owner approval.
   - Unlocks: P04.S02
 - `P04.S02 Implement rubric refinement API responses`
-  - Action: Update router response structs and store mapping so succeeded checklists return dimensions, candidate questions, refinements, and final questions; update succeeded evaluations to report equal-count score fields.
+  - Action: Update router response structs and store mapping so succeeded checklists return dimensions, candidate questions, refinements, rationales, and final questions with no `weights` field; update succeeded evaluations to report equal-count score fields.
   - Why now: Docs and smoke scripts need the new response contract.
   - Files/surfaces: `internal/api/router.go`, `internal/db/store.go`.
   - Requirement link: REQ-011, REQ-020, REQ-021, REQ-045.
@@ -559,7 +568,7 @@ Plan-and-Solve subtasks:
   - Stop/escalate condition: Stop if the new response contract is missing required rubric refinement data.
   - Unlocks: P04.S03
 - `P04.S03 Add failing coverage for updated curl docs and scripts`
-  - Action: Update `scripts/validate_docs_curl.sh` with traceability shell comments for `TEST-008` assertions covering dimensions, refinements, final question count, and equal-count score fields in docs and scripts.
+  - Action: Update `scripts/validate_docs_curl.sh` with traceability shell comments for `TEST-008` assertions covering dimensions, refinements, rationales, final question count, limit diagnostics, and equal-count score fields in docs and scripts.
   - Why now: Operator documentation must match response changes.
   - Files/surfaces: `scripts/validate_docs_curl.sh`.
   - Requirement link: REQ-012, REQ-044.
@@ -571,7 +580,7 @@ Plan-and-Solve subtasks:
   - Stop/escalate condition: Stop if a required curl example cannot be expressed with the new rubric refinement response.
   - Unlocks: P04.S04
 - `P04.S04 Implement updated curl docs and scripts`
-  - Action: Update `docs/curl.md`, `scripts/smoke_curl.sh`, and `scripts/live_curl_example.sh` to parse and print dimensions, refinements, final question count, score fields, and judgment count.
+  - Action: Update `docs/curl.md`, `scripts/smoke_curl.sh`, and `scripts/live_curl_example.sh` to parse and print dimensions, refinements, rationales, final question count, score fields, judgment count, and limit diagnostics.
   - Why now: The operator path must prove the new API contract through curl.
   - Files/surfaces: `docs/curl.md`, `scripts/smoke_curl.sh`, `scripts/live_curl_example.sh`.
   - Requirement link: REQ-012, REQ-044.
@@ -590,7 +599,7 @@ Plan-and-Solve subtasks:
   - Verification link: EVAL-001.
   - Verification mode: MEASURE.
   - Command/procedure: `make test-e2e`
-  - Expected result: Exit 0 with good mean pass rate >= 0.80, bad mean pass rate <= 0.50, gap >= 0.30, judgment coverage 1.0, and final question count >= 8 per case.
+  - Expected result: Exit 0 with good mean pass rate >= 0.80, bad mean pass rate <= 0.50, gap >= 0.30, judgment coverage 1.0, final question count >= 8 per case, and recorded diagnostics for checklist ID, evaluation ID, pass rate, failed question IDs, final question count, judgment count, case classification, and limit hits.
   - Evidence produced: smoke output and `debug/smoke/summary.json`.
   - Stop/escalate condition: Stop if quality thresholds fail twice with the same prompt/schema revision.
   - Unlocks: P04.S06
@@ -602,7 +611,7 @@ Plan-and-Solve subtasks:
   - Verification link: EVAL-002.
   - Verification mode: MEASURE.
   - Command/procedure: `make test-live-curl`
-  - Expected result: Exit 0 with succeeded checklist and evaluation, final question count >= 8, judgment count equal to final question count, and parseable equal-count score fields.
+  - Expected result: Exit 0 with succeeded checklist and evaluation, final question count >= 8, judgment count equal to final question count, parseable equal-count score fields, and parseable limit diagnostics.
   - Evidence produced: live curl output and `debug/live-curl/summary.json`.
   - Stop/escalate condition: Stop if local services are unavailable or output uses obsolete weight fields.
   - Unlocks: Phase exit
@@ -734,12 +743,16 @@ evals:
       - mean_pass_rate_gap
       - final_question_count_min
       - judgment_coverage
+      - limit_hit_count
+      - per_case_diagnostics_present
     thresholds:
       good_answer_mean_pass_rate: ">= 0.80"
       bad_answer_mean_pass_rate: "<= 0.50"
       mean_pass_rate_gap: ">= 0.30"
       final_question_count_min: ">= 8 per case"
       judgment_coverage: "== 1.0"
+      limit_hit_count: "recorded"
+      per_case_diagnostics_present: "true"
     seeds: "fixtures/smoke/cases/*"
     runtime_budget: "10m"
   - id: EVAL-002
@@ -750,12 +763,14 @@ evals:
       - final_question_count
       - judgment_count
       - score_fields_parse
+      - limit_diagnostics_parse
     thresholds:
       checklist_status: "succeeded"
       evaluation_status: "succeeded"
       final_question_count: ">= 8"
       judgment_count: "== final_question_count"
       score_fields_parse: "true"
+      limit_diagnostics_parse: "true"
     seeds: "fixtures/smoke/cases/release_notes"
     runtime_budget: "6m"
 ```
@@ -815,7 +830,7 @@ evals:
   - command: `go test ./internal/llm -run TestRubricRefinementSchemasAndPrompts -count=1`
   - fixtures/mocks/data: prompt builder calls with fixed task, context, dimension, candidate, and split count.
   - deterministic controls: no network, fixed strings, schema inspection through JSON marshaling.
-  - pass_criteria: new schemas exist; prompt text omits fixed question count, comparative strong/weak phrasing, and literal JSON examples; shared question requirements fragment appears in both question-generation prompts.
+  - pass_criteria: new schemas exist; prompt text omits fixed question count, comparative strong/weak phrasing, and literal JSON examples; shared question requirements fragment appears in both question-generation prompts; refinement prompt tells the model to assign `refinement_count=0` to semantic duplicates.
   - expected_runtime: <10s
 - id: TEST-002
   - name: Final checklist construction and equal scoring
@@ -825,7 +840,7 @@ evals:
   - command: `go test ./internal/evalcore -run TestEvalcoreRubricRefinement -count=1`
   - fixtures/mocks/data: in-memory dimensions, candidates, refinements with counts 0, 1, 2, 4, split outputs, and judgments.
   - deterministic controls: fixed input slices and no external services.
-  - pass_criteria: final questions are deterministic; count 0 deletes; count 1 keeps; counts 2..4 require exact split output; score counts yes judgments equally.
+  - pass_criteria: final questions are deterministic; count 0 deletes; count 1 keeps; counts 2..4 require exact split output; default `max_final_questions` is 64; limit failures include structured diagnostics; score counts yes judgments equally.
   - expected_runtime: <10s
 - id: TEST-003
   - name: Rubric refinement persistence
@@ -865,7 +880,7 @@ evals:
   - command: `go test ./internal/workflows -run TestRubricRefinementWorkflows -count=1`
   - fixtures/mocks/data: Temporal testsuite, mocked activities, deterministic dimensions/candidates/refinements/split outputs.
   - deterministic controls: mocked activity responses and fixed workflow inputs.
-  - pass_criteria: create workflow calls dimension analysis, fans out question generation, fans in refinement assignment, fans out splitting, persists final checklist, and failure path persists terminal failed status; evaluation judges final questions only.
+  - pass_criteria: create workflow calls dimension analysis, fans out question generation, fans in refinement assignment, fans out splitting, persists final checklist, records limit diagnostics on limit failure, and failure path persists terminal failed status; evaluation judges final questions only.
   - expected_runtime: <15s
 - id: TEST-007
   - name: Rubric refinement API responses
@@ -875,7 +890,7 @@ evals:
   - command: `go test ./internal/api -run TestRubricRefinementAPIResponses -count=1`
   - fixtures/mocks/data: fake store and fake Temporal starter returning succeeded checklist/evaluation data.
   - deterministic controls: in-memory fakes and fixed IDs.
-  - pass_criteria: succeeded checklist response contains dimensions, candidate_questions, refinements, and final questions; succeeded checklist response omits `weights`; evaluation score fields reflect equal-count scoring.
+  - pass_criteria: succeeded checklist response contains dimensions, candidate_questions, refinements, rationales, and final questions; succeeded checklist response omits `weights`; evaluation score fields reflect equal-count scoring.
   - expected_runtime: <10s
 - id: TEST-008
   - name: Rubric refinement docs and curl scripts
@@ -885,7 +900,7 @@ evals:
   - command: `bash scripts/validate_docs_curl.sh`
   - fixtures/mocks/data: `docs/curl.md`, `scripts/smoke_curl.sh`, `scripts/live_curl_example.sh`.
   - deterministic controls: static file inspection and no network.
-  - pass_criteria: docs and scripts reference dimensions, refinements, final question count, equal score fields, and no obsolete weight-as-score wording.
+  - pass_criteria: docs and scripts reference dimensions, refinements, rationales, final question count, limit diagnostics, equal score fields, and no obsolete weight-as-score wording.
   - expected_runtime: <5s
 - id: TEST-009
   - name: Full static and unit regression
@@ -946,6 +961,8 @@ Invariants:
 - Every final question references one source candidate and one dimension.
 - Every succeeded evaluation has exactly one judgment per final question.
 - Score is recomputable from final questions and judgments without refinement counts.
+- Default checklist limits are `max_dimensions=4`, `max_candidates_per_dimension=6`, `max_split_count=4`, and `max_final_questions=64`.
+- Checklist limits are loaded through one config path and included in diagnostics when a limit is hit.
 
 Privacy/data quality constraints:
 
@@ -959,7 +976,7 @@ Privacy/data quality constraints:
 - Seeds: committed fixtures under `fixtures/smoke/cases/incident_response` and `fixtures/smoke/cases/release_notes`.
 - Hardware assumptions: local shaman host with Docker Engine, systemd/user services, Go toolchain, 4 vCPU, 8 GB RAM.
 - OS/driver/container tag: Ubuntu-like Linux, Docker Compose v2, `postgres:16.4`, `temporalio/auto-setup:1.28.4`, `dxflrs/garage:v2.3.0`, existing LiteLLM image from `/home/kirill/p/litellm-chatgpt`.
-- Relevant environment variables: `BIN_EVAL_ENV`, `BIN_EVAL_DATABASE_URL`, `BIN_EVAL_TEMPORAL_ADDRESS`, `BIN_EVAL_TEMPORAL_TASK_QUEUE`, `BIN_EVAL_GARAGE_ENDPOINT`, `BIN_EVAL_GARAGE_ACCESS_KEY`, `BIN_EVAL_GARAGE_SECRET_KEY`, `BIN_EVAL_ARTIFACT_BUCKET`, `BIN_EVAL_LLM_BASE_URL`, `BIN_EVAL_LLM_API_KEY`, `BIN_EVAL_MODEL_PROFILE`, `BIN_EVAL_URL`, `BIN_EVAL_LISTEN_ADDR`, `LITELLM_MASTER_KEY`, `LITELLM_PORT`.
+- Relevant environment variables: `BIN_EVAL_ENV`, `BIN_EVAL_DATABASE_URL`, `BIN_EVAL_TEMPORAL_ADDRESS`, `BIN_EVAL_TEMPORAL_TASK_QUEUE`, `BIN_EVAL_GARAGE_ENDPOINT`, `BIN_EVAL_GARAGE_ACCESS_KEY`, `BIN_EVAL_GARAGE_SECRET_KEY`, `BIN_EVAL_ARTIFACT_BUCKET`, `BIN_EVAL_LLM_BASE_URL`, `BIN_EVAL_LLM_API_KEY`, `BIN_EVAL_MODEL_PROFILE`, `BIN_EVAL_URL`, `BIN_EVAL_LISTEN_ADDR`, `BIN_EVAL_MAX_DIMENSIONS`, `BIN_EVAL_MAX_CANDIDATES_PER_DIMENSION`, `BIN_EVAL_MAX_SPLIT_COUNT`, `BIN_EVAL_MAX_FINAL_QUESTIONS`, `LITELLM_MASTER_KEY`, `LITELLM_PORT`.
 
 ## 10. Requirements Traceability Matrix
 

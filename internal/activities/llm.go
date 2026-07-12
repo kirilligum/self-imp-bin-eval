@@ -11,16 +11,18 @@ import (
 )
 
 const (
-	ActivityWriteChecklistInputs = "WriteChecklistInputs"
-	ActivityWriteEvaluationInput = "WriteEvaluationInput"
-	ActivityGenerateQuestions    = "GenerateQuestions"
-	ActivityAssignWeights        = "AssignWeights"
-	ActivityJudgeAnswer          = "JudgeAnswer"
-	ActivityLoadChecklist        = "LoadChecklist"
-	ActivitySucceedChecklist     = "SucceedChecklist"
-	ActivityFailChecklist        = "FailChecklist"
-	ActivitySucceedEvaluation    = "SucceedEvaluation"
-	ActivityFailEvaluation       = "FailEvaluation"
+	ActivityWriteChecklistInputs          = "WriteChecklistInputs"
+	ActivityWriteEvaluationInput          = "WriteEvaluationInput"
+	ActivityAnalyzeDimensions             = "AnalyzeDimensions"
+	ActivityGenerateQuestionsForDimension = "GenerateQuestionsForDimension"
+	ActivityAssignWeights                 = "AssignWeights"
+	ActivitySplitQuestion                 = "SplitQuestion"
+	ActivityJudgeAnswer                   = "JudgeAnswer"
+	ActivityLoadChecklist                 = "LoadChecklist"
+	ActivitySucceedChecklist              = "SucceedChecklist"
+	ActivityFailChecklist                 = "FailChecklist"
+	ActivitySucceedEvaluation             = "SucceedEvaluation"
+	ActivityFailEvaluation                = "FailEvaluation"
 )
 
 type Dependencies struct {
@@ -57,25 +59,52 @@ type WriteEvaluationInputInput struct {
 	ModelAnswer  string
 }
 
-type GenerateQuestionsInput struct {
+type AnalyzeDimensionsInput struct {
 	ChecklistID string
 	Task        string
 	Context     string
+	Limits      evalcore.ChecklistLimits
 }
 
-type GenerateQuestionsResult struct {
-	Questions []evalcore.CandidateQuestion
+type AnalyzeDimensionsResult struct {
+	Dimensions []evalcore.Dimension
+}
+
+type GenerateQuestionsForDimensionInput struct {
+	ChecklistID string
+	Task        string
+	Context     string
+	Dimension   evalcore.Dimension
+	Limits      evalcore.ChecklistLimits
+}
+
+type GenerateQuestionsForDimensionResult struct {
+	Questions []evalcore.DraftQuestion
 }
 
 type AssignWeightsInput struct {
-	ChecklistID string
-	Task        string
-	Context     string
-	Questions   []evalcore.CandidateQuestion
+	ChecklistID        string
+	Task               string
+	Context            string
+	CandidateQuestions []evalcore.CandidateQuestion
+	Limits             evalcore.ChecklistLimits
 }
 
 type AssignWeightsResult struct {
 	Weights []evalcore.Weight
+}
+
+type SplitQuestionInput struct {
+	ChecklistID       string
+	Task              string
+	Context           string
+	CandidateQuestion evalcore.CandidateQuestion
+	Weight            evalcore.Weight
+	Limits            evalcore.ChecklistLimits
+}
+
+type SplitQuestionResult struct {
+	Split evalcore.SplitQuestions
 }
 
 type JudgeAnswerInput struct {
@@ -83,8 +112,7 @@ type JudgeAnswerInput struct {
 	Task         string
 	Context      string
 	ModelAnswer  string
-	Questions    []evalcore.CandidateQuestion
-	Weights      []evalcore.Weight
+	Questions    []evalcore.FinalQuestion
 }
 
 type JudgeAnswerResult struct {
@@ -102,9 +130,11 @@ type LoadChecklistResult struct {
 }
 
 type SucceedChecklistInput struct {
-	ChecklistID string
-	Questions   []evalcore.CandidateQuestion
-	Weights     []evalcore.Weight
+	ChecklistID        string
+	Dimensions         []evalcore.Dimension
+	CandidateQuestions []evalcore.CandidateQuestion
+	Weights            []evalcore.Weight
+	Questions          []evalcore.FinalQuestion
 }
 
 type FailChecklistInput struct {
@@ -142,41 +172,70 @@ func (a *Activities) WriteEvaluationInput(ctx context.Context, in WriteEvaluatio
 	return nil
 }
 
-func (a *Activities) GenerateQuestions(ctx context.Context, in GenerateQuestionsInput) (GenerateQuestionsResult, error) {
-	req := llm.BuildQuestionGenerationRequest(in.Task, in.Context, a.modelProfile)
+func (a *Activities) AnalyzeDimensions(ctx context.Context, in AnalyzeDimensionsInput) (AnalyzeDimensionsResult, error) {
+	limits := in.Limits.WithDefaults()
+	req := llm.BuildDimensionAnalysisRequest(in.Task, in.Context, a.modelProfile, limits)
+	var out llm.DimensionAnalysisOutput
+	if err := a.runChecklistLLM(ctx, in.ChecklistID, artifacts.PromptDimensionAnalysis, req, &out); err != nil {
+		return AnalyzeDimensionsResult{}, err
+	}
+	if err := evalcore.ValidateDimensionGeneration(out.Dimensions, limits); err != nil {
+		return AnalyzeDimensionsResult{}, ToTemporalError(err)
+	}
+	dimensions := evalcore.AssignDimensionIDs(out.Dimensions)
+	if err := evalcore.ValidateDimensions(dimensions, limits); err != nil {
+		return AnalyzeDimensionsResult{}, ToTemporalError(err)
+	}
+	return AnalyzeDimensionsResult{Dimensions: dimensions}, nil
+}
+
+func (a *Activities) GenerateQuestionsForDimension(ctx context.Context, in GenerateQuestionsForDimensionInput) (GenerateQuestionsForDimensionResult, error) {
+	limits := in.Limits.WithDefaults()
+	req := llm.BuildQuestionGenerationRequest(in.Task, in.Context, a.modelProfile, in.Dimension, limits)
 	var out llm.QuestionGenerationOutput
-	if err := a.runChecklistLLM(ctx, in.ChecklistID, artifacts.PromptQuestionGeneration, req, &out); err != nil {
-		return GenerateQuestionsResult{}, err
+	if err := a.runChecklistLLM(ctx, in.ChecklistID, artifacts.PromptQuestionGeneration+"/"+in.Dimension.ID, req, &out); err != nil {
+		return GenerateQuestionsForDimensionResult{}, err
 	}
-	if err := evalcore.ValidateQuestionGeneration(out.Questions); err != nil {
-		return GenerateQuestionsResult{}, ToTemporalError(err)
+	if err := evalcore.ValidateQuestionGeneration(out.Questions, limits); err != nil {
+		return GenerateQuestionsForDimensionResult{}, ToTemporalError(err)
 	}
-	return GenerateQuestionsResult{Questions: evalcore.AssignQuestionIDs(out.Questions)}, nil
+	return GenerateQuestionsForDimensionResult{Questions: out.Questions}, nil
 }
 
 func (a *Activities) AssignWeights(ctx context.Context, in AssignWeightsInput) (AssignWeightsResult, error) {
-	req := llm.BuildWeightAssignmentRequest(in.Task, in.Context, a.modelProfile, in.Questions)
+	limits := in.Limits.WithDefaults()
+	req := llm.BuildWeightAssignmentRequest(in.Task, in.Context, a.modelProfile, in.CandidateQuestions, limits)
 	var out llm.WeightAssignmentOutput
 	if err := a.runChecklistLLM(ctx, in.ChecklistID, artifacts.PromptWeightAssignment, req, &out); err != nil {
 		return AssignWeightsResult{}, err
 	}
-	if err := evalcore.ValidateWeights(in.Questions, out.Weights); err != nil {
+	if err := evalcore.ValidateWeights(in.CandidateQuestions, out.Weights, limits); err != nil {
 		return AssignWeightsResult{}, ToTemporalError(err)
 	}
 	return AssignWeightsResult{Weights: out.Weights}, nil
 }
 
-func (a *Activities) JudgeAnswer(ctx context.Context, in JudgeAnswerInput) (JudgeAnswerResult, error) {
-	active, err := evalcore.BuildActiveChecklist(in.Questions, in.Weights)
-	if err != nil {
-		return JudgeAnswerResult{}, ToTemporalError(err)
+func (a *Activities) SplitQuestion(ctx context.Context, in SplitQuestionInput) (SplitQuestionResult, error) {
+	limits := in.Limits.WithDefaults()
+	req := llm.BuildQuestionSplittingRequest(in.Task, in.Context, a.modelProfile, in.CandidateQuestion, in.Weight, limits)
+	var out llm.QuestionSplittingOutput
+	if err := a.runChecklistLLM(ctx, in.ChecklistID, artifacts.PromptQuestionSplitting+"/"+in.CandidateQuestion.ID, req, &out); err != nil {
+		return SplitQuestionResult{}, err
 	}
-	req := llm.BuildBinaryJudgingRequest(in.Task, in.Context, in.ModelAnswer, a.modelProfile, active)
+	split := evalcore.SplitQuestions{CandidateQuestionID: in.CandidateQuestion.ID, Questions: out.Questions}
+	if err := evalcore.ValidateSplitQuestions(split, in.Weight.Weight); err != nil {
+		return SplitQuestionResult{}, ToTemporalError(err)
+	}
+	return SplitQuestionResult{Split: split}, nil
+}
+
+func (a *Activities) JudgeAnswer(ctx context.Context, in JudgeAnswerInput) (JudgeAnswerResult, error) {
+	req := llm.BuildBinaryJudgingRequest(in.Task, in.Context, in.ModelAnswer, a.modelProfile, in.Questions)
 	var out llm.BinaryJudgingOutput
 	if err := a.runEvaluationLLM(ctx, in.EvaluationID, artifacts.PromptBinaryJudging, req, &out); err != nil {
 		return JudgeAnswerResult{}, err
 	}
-	if err := evalcore.ValidateJudgments(in.Questions, in.Weights, out.Judgments); err != nil {
+	if err := evalcore.ValidateJudgments(in.Questions, out.Judgments); err != nil {
 		return JudgeAnswerResult{}, ToTemporalError(err)
 	}
 	return JudgeAnswerResult{Judgments: out.Judgments}, nil

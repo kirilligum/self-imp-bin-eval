@@ -1,6 +1,9 @@
 package llm
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 const (
 	ErrorClassModelOutputInvalid = "model_output_invalid"
@@ -9,18 +12,36 @@ const (
 )
 
 type ModelOutputError struct {
-	Message string
-	Cause   error
+	Message    string
+	Cause      error
+	RawContent string
 }
 
 func (e *ModelOutputError) Error() string {
+	msg := e.Message
 	if e.Cause == nil {
-		return e.Message
+		if strings.TrimSpace(e.RawContent) == "" {
+			return msg
+		}
+		return fmt.Sprintf("%s: raw_content=%q", msg, truncateRawContent(e.RawContent))
 	}
-	return fmt.Sprintf("%s: %v", e.Message, e.Cause)
+	msg = fmt.Sprintf("%s: %v", msg, e.Cause)
+	if strings.TrimSpace(e.RawContent) == "" {
+		return msg
+	}
+	return fmt.Sprintf("%s: raw_content=%q", msg, truncateRawContent(e.RawContent))
 }
 
 func (e *ModelOutputError) Unwrap() error { return e.Cause }
+
+func truncateRawContent(raw string) string {
+	raw = strings.TrimSpace(raw)
+	const maxLen = 800
+	if len(raw) <= maxLen {
+		return raw
+	}
+	return raw[:maxLen] + "...[truncated]"
+}
 
 type InfraError struct {
 	Message   string

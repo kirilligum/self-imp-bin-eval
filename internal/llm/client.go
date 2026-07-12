@@ -44,9 +44,10 @@ func (c *HTTPClient) GenerateJSON(ctx context.Context, req GenerateRequest, out 
 		})
 	}
 	body := map[string]any{
-		"model":  req.ModelProfile,
-		"stream": true,
-		"input":  input,
+		"model":             req.ModelProfile,
+		"stream":            true,
+		"input":             input,
+		"max_output_tokens": 16000,
 		"text": map[string]any{
 			"format": map[string]any{
 				"type":   "json_schema",
@@ -89,14 +90,14 @@ func (c *HTTPClient) GenerateJSON(ctx context.Context, req GenerateRequest, out 
 		return &InfraError{Message: "failed to decode LLM response stream", Retryable: true, Cause: err}
 	}
 	if strings.TrimSpace(content) == "" {
-		return &ModelOutputError{Message: "LLM response contained no JSON content"}
+		return &ModelOutputError{Message: "LLM response contained no JSON content", RawContent: content}
 	}
 	if err := json.Unmarshal([]byte(content), out); err != nil {
-		return &ModelOutputError{Message: "LLM returned invalid JSON content", Cause: err}
+		return &ModelOutputError{Message: "LLM returned invalid JSON content", Cause: err, RawContent: content}
 	}
 	if validatable, ok := out.(Validatable); ok {
 		if err := validatable.Validate(); err != nil {
-			return &ModelOutputError{Message: "LLM output failed schema validation", Cause: err}
+			return &ModelOutputError{Message: "LLM output failed schema validation", Cause: err, RawContent: content}
 		}
 	}
 	return nil
@@ -115,11 +116,7 @@ func readResponsesStream(r io.Reader) (string, error) {
 		if payload == "[DONE]" {
 			break
 		}
-		var event struct {
-			Type  string `json:"type"`
-			Delta string `json:"delta"`
-			Text  string `json:"text"`
-		}
+		var event responsesStreamEvent
 		if err := json.Unmarshal([]byte(payload), &event); err != nil {
 			return "", err
 		}
@@ -130,10 +127,56 @@ func readResponsesStream(r io.Reader) (string, error) {
 			if event.Text != "" {
 				return event.Text, nil
 			}
+		case "response.failed", "error":
+			return "", fmt.Errorf("responses stream failed: %s", responseStreamError(event))
 		}
 	}
 	if err := scanner.Err(); err != nil {
 		return "", err
 	}
 	return content.String(), nil
+}
+
+type responsesStreamEvent struct {
+	Type     string                    `json:"type"`
+	Delta    string                    `json:"delta"`
+	Text     string                    `json:"text"`
+	Message  string                    `json:"message"`
+	Error    *responsesStreamErrorBody `json:"error"`
+	Response *struct {
+		Error *responsesStreamErrorBody `json:"error"`
+	} `json:"response"`
+}
+
+type responsesStreamErrorBody struct {
+	Message string `json:"message"`
+	Code    string `json:"code"`
+}
+
+func responseStreamError(event responsesStreamEvent) string {
+	var responseError *responsesStreamErrorBody
+	if event.Response != nil {
+		responseError = event.Response.Error
+	}
+	for _, candidate := range []string{
+		event.Message,
+		errorText(event.Error),
+		errorText(responseError),
+		event.Type,
+	} {
+		if strings.TrimSpace(candidate) != "" {
+			return candidate
+		}
+	}
+	return "unknown error"
+}
+
+func errorText(err *responsesStreamErrorBody) string {
+	if err == nil {
+		return ""
+	}
+	if strings.TrimSpace(err.Message) != "" {
+		return err.Message
+	}
+	return err.Code
 }

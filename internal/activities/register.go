@@ -8,8 +8,10 @@ import (
 func Register(w worker.Worker, acts *Activities) {
 	w.RegisterActivityWithOptions(acts.WriteChecklistInputs, activity.RegisterOptions{Name: ActivityWriteChecklistInputs})
 	w.RegisterActivityWithOptions(acts.WriteEvaluationInput, activity.RegisterOptions{Name: ActivityWriteEvaluationInput})
-	w.RegisterActivityWithOptions(acts.GenerateQuestions, activity.RegisterOptions{Name: ActivityGenerateQuestions})
+	w.RegisterActivityWithOptions(acts.AnalyzeDimensions, activity.RegisterOptions{Name: ActivityAnalyzeDimensions})
+	w.RegisterActivityWithOptions(acts.GenerateQuestionsForDimension, activity.RegisterOptions{Name: ActivityGenerateQuestionsForDimension})
 	w.RegisterActivityWithOptions(acts.AssignWeights, activity.RegisterOptions{Name: ActivityAssignWeights})
+	w.RegisterActivityWithOptions(acts.SplitQuestion, activity.RegisterOptions{Name: ActivitySplitQuestion})
 	w.RegisterActivityWithOptions(acts.JudgeAnswer, activity.RegisterOptions{Name: ActivityJudgeAnswer})
 	w.RegisterActivityWithOptions(acts.LoadChecklist, activity.RegisterOptions{Name: ActivityLoadChecklist})
 	w.RegisterActivityWithOptions(acts.SucceedChecklist, activity.RegisterOptions{Name: ActivitySucceedChecklist})

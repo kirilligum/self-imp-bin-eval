@@ -39,8 +39,10 @@ type Checklist struct {
 	ErrorMessage       *string
 	CreatedAt          time.Time
 	CompletedAt        *time.Time
-	Questions          []evalcore.CandidateQuestion
+	Dimensions         []evalcore.Dimension
+	CandidateQuestions []evalcore.CandidateQuestion
 	Weights            []evalcore.Weight
+	Questions          []evalcore.FinalQuestion
 }
 
 type Evaluation struct {
@@ -79,18 +81,45 @@ func (s *Store) Close() {
 }
 
 func ApplyMigrations(ctx context.Context, pool *pgxpool.Pool, dir string) error {
+	if _, err := pool.Exec(ctx, `
+		create table if not exists schema_migrations (
+			filename text primary key,
+			applied_at timestamptz not null default now()
+		)`); err != nil {
+		return err
+	}
 	files, err := migrationFiles(dir)
 	if err != nil {
 		return err
 	}
 	sort.Strings(files)
 	for _, file := range files {
+		name := filepath.Base(file)
+		var applied bool
+		if err := pool.QueryRow(ctx, `select exists(select 1 from schema_migrations where filename = $1)`, name).Scan(&applied); err != nil {
+			return err
+		}
+		if applied {
+			continue
+		}
 		sqlBytes, err := os.ReadFile(file)
 		if err != nil {
 			return err
 		}
-		if _, err := pool.Exec(ctx, string(sqlBytes)); err != nil {
+		tx, err := pool.Begin(ctx)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, string(sqlBytes)); err != nil {
+			_ = tx.Rollback(ctx)
 			return fmt.Errorf("apply migration %s: %w", file, err)
+		}
+		if _, err := tx.Exec(ctx, `insert into schema_migrations (filename) values ($1)`, name); err != nil {
+			_ = tx.Rollback(ctx)
+			return err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -138,8 +167,17 @@ func (s *Store) CreateChecklistForWorkflow(ctx context.Context) (string, error) 
 	return id, err
 }
 
-func (s *Store) SucceedChecklist(ctx context.Context, checklistID string, questions []evalcore.CandidateQuestion, weights []evalcore.Weight) error {
-	if err := evalcore.ValidateWeights(questions, weights); err != nil {
+func (s *Store) SucceedChecklist(ctx context.Context, checklistID string, dimensions []evalcore.Dimension, candidates []evalcore.CandidateQuestion, weights []evalcore.Weight, questions []evalcore.FinalQuestion) error {
+	if err := evalcore.ValidateDimensions(dimensions, evalcore.DefaultChecklistLimits()); err != nil {
+		return err
+	}
+	if err := evalcore.ValidateCandidateQuestions(dimensions, candidates, evalcore.DefaultChecklistLimits()); err != nil {
+		return err
+	}
+	if err := evalcore.ValidateWeights(candidates, weights, evalcore.DefaultChecklistLimits()); err != nil {
+		return err
+	}
+	if err := evalcore.ValidateFinalQuestions(dimensions, candidates, questions, evalcore.DefaultChecklistLimits()); err != nil {
 		return err
 	}
 	tx, err := s.pool.Begin(ctx)
@@ -148,19 +186,35 @@ func (s *Store) SucceedChecklist(ctx context.Context, checklistID string, questi
 	}
 	defer tx.Rollback(ctx)
 
-	for _, question := range questions {
+	for _, dimension := range dimensions {
 		if _, err := tx.Exec(ctx, `
-			insert into questions (checklist_id, id, ordinal, rationale, question)
-			values ($1, $2, $3, $4, $5)`,
-			checklistID, question.ID, question.Ordinal, question.Rationale, question.Question); err != nil {
+			insert into checklist_dimensions (checklist_id, id, ordinal, name, rubric, rationale)
+			values ($1, $2, $3, $4, $5, $6)`,
+			checklistID, dimension.ID, dimension.Ordinal, dimension.Name, dimension.Rubric, dimension.Rationale); err != nil {
+			return err
+		}
+	}
+	for _, candidate := range candidates {
+		if _, err := tx.Exec(ctx, `
+			insert into candidate_questions (checklist_id, id, dimension_id, ordinal, rationale, question)
+			values ($1, $2, $3, $4, $5, $6)`,
+			checklistID, candidate.ID, candidate.DimensionID, candidate.Ordinal, candidate.Rationale, candidate.Question); err != nil {
 			return err
 		}
 	}
 	for _, weight := range weights {
 		if _, err := tx.Exec(ctx, `
-			insert into weights (checklist_id, question_id, rationale, weight)
+			insert into question_weights (checklist_id, candidate_question_id, rationale, weight)
 			values ($1, $2, $3, $4)`,
-			checklistID, weight.QuestionID, weight.Rationale, weight.Weight); err != nil {
+			checklistID, weight.CandidateQuestionID, weight.Rationale, weight.Weight); err != nil {
+			return err
+		}
+	}
+	for _, question := range questions {
+		if _, err := tx.Exec(ctx, `
+			insert into questions (checklist_id, id, ordinal, dimension_id, source_candidate_id, rationale, question)
+			values ($1, $2, $3, $4, $5, $6, $7)`,
+			checklistID, question.ID, question.Ordinal, question.DimensionID, question.SourceCandidateID, question.Rationale, question.Question); err != nil {
 			return err
 		}
 	}
@@ -212,21 +266,32 @@ func (s *Store) GetChecklist(ctx context.Context, checklistID string) (Checklist
 		checklist.CompletedAt = &completedAt.Time
 	}
 
-	rows, err := s.pool.Query(ctx, `
-		select id, ordinal, rationale, question
-		from questions where checklist_id = $1 order by ordinal`, checklistID)
+	dimensionRows, err := s.pool.Query(ctx, `
+		select id, ordinal, name, rubric, rationale
+		from checklist_dimensions where checklist_id = $1 order by ordinal`, checklistID)
 	if err != nil {
 		return Checklist{}, err
 	}
-	checklist.Questions, err = pgx.CollectRows(rows, pgx.RowToStructByName[evalcore.CandidateQuestion])
+	checklist.Dimensions, err = pgx.CollectRows(dimensionRows, pgx.RowToStructByName[evalcore.Dimension])
+	if err != nil {
+		return Checklist{}, err
+	}
+
+	candidateRows, err := s.pool.Query(ctx, `
+		select id, dimension_id, ordinal, rationale, question
+		from candidate_questions where checklist_id = $1 order by ordinal`, checklistID)
+	if err != nil {
+		return Checklist{}, err
+	}
+	checklist.CandidateQuestions, err = pgx.CollectRows(candidateRows, pgx.RowToStructByName[evalcore.CandidateQuestion])
 	if err != nil {
 		return Checklist{}, err
 	}
 
 	weightRows, err := s.pool.Query(ctx, `
-		select w.question_id, w.rationale, w.weight
-		from weights w
-		join questions q on q.checklist_id = w.checklist_id and q.id = w.question_id
+		select w.candidate_question_id, w.rationale, w.weight
+		from question_weights w
+		join candidate_questions q on q.checklist_id = w.checklist_id and q.id = w.candidate_question_id
 		where w.checklist_id = $1
 		order by q.ordinal`, checklistID)
 	if err != nil {
@@ -235,12 +300,23 @@ func (s *Store) GetChecklist(ctx context.Context, checklistID string) (Checklist
 	defer weightRows.Close()
 	for weightRows.Next() {
 		var weight evalcore.Weight
-		if err := weightRows.Scan(&weight.QuestionID, &weight.Rationale, &weight.Weight); err != nil {
+		if err := weightRows.Scan(&weight.CandidateQuestionID, &weight.Rationale, &weight.Weight); err != nil {
 			return Checklist{}, err
 		}
 		checklist.Weights = append(checklist.Weights, weight)
 	}
 	if err := weightRows.Err(); err != nil {
+		return Checklist{}, err
+	}
+
+	finalRows, err := s.pool.Query(ctx, `
+		select id, ordinal, dimension_id, source_candidate_id, rationale, question
+		from questions where checklist_id = $1 order by ordinal`, checklistID)
+	if err != nil {
+		return Checklist{}, err
+	}
+	checklist.Questions, err = pgx.CollectRows(finalRows, pgx.RowToStructByName[evalcore.FinalQuestion])
+	if err != nil {
 		return Checklist{}, err
 	}
 	return checklist, nil
@@ -292,7 +368,7 @@ func (s *Store) SucceedEvaluation(ctx context.Context, evaluationID, checklistID
 	if err != nil {
 		return err
 	}
-	if err := evalcore.ValidateJudgments(checklist.Questions, checklist.Weights, judgments); err != nil {
+	if err := evalcore.ValidateJudgments(checklist.Questions, judgments); err != nil {
 		return err
 	}
 	tx, err := s.pool.Begin(ctx)
@@ -408,7 +484,7 @@ func (s *Store) GetEvaluation(ctx context.Context, evaluationID string) (Evaluat
 		if err != nil {
 			return Evaluation{}, err
 		}
-		score, err := evalcore.ScoreChecklist(checklist.Questions, checklist.Weights, evaluation.Judgments)
+		score, err := evalcore.ScoreChecklist(checklist.Questions, evaluation.Judgments)
 		if err != nil {
 			return Evaluation{}, err
 		}

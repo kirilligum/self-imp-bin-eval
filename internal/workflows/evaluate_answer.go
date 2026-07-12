@@ -39,12 +39,11 @@ func EvaluateAnswerWorkflow(ctx workflow.Context, in EvaluateAnswerInput) error 
 		Context:      loaded.Context,
 		ModelAnswer:  in.ModelAnswer,
 		Questions:    loaded.Checklist.Questions,
-		Weights:      loaded.Checklist.Weights,
 	}).Get(ctx, &judged); err != nil {
 		return failEvaluation(ctx, in.EvaluationID, in.ChecklistID, err)
 	}
 
-	score, err := evalcore.ScoreChecklist(loaded.Checklist.Questions, loaded.Checklist.Weights, judged.Judgments)
+	score, err := evalcore.ScoreChecklist(loaded.Checklist.Questions, judged.Judgments)
 	if err != nil {
 		return failEvaluation(ctx, in.EvaluationID, in.ChecklistID, err)
 	}

@@ -1,11 +1,7 @@
 package evalcore
 
-func ScoreChecklist(questions []CandidateQuestion, weights []Weight, judgments []Judgment) (ScoreResult, error) {
-	active, err := BuildActiveChecklist(questions, weights)
-	if err != nil {
-		return ScoreResult{}, err
-	}
-	if err := ValidateJudgments(questions, weights, judgments); err != nil {
+func ScoreChecklist(questions []FinalQuestion, judgments []Judgment) (ScoreResult, error) {
+	if err := ValidateJudgments(questions, judgments); err != nil {
 		return ScoreResult{}, err
 	}
 
@@ -14,12 +10,11 @@ func ScoreChecklist(questions []CandidateQuestion, weights []Weight, judgments [
 		judgmentByID[judgment.QuestionID] = judgment
 	}
 
-	var result ScoreResult
-	for _, question := range active {
-		result.TotalPossiblePoints += question.Weight
+	result := ScoreResult{TotalPossiblePoints: len(questions)}
+	for _, question := range questions {
 		judgment := judgmentByID[question.ID]
 		if judgment.Answer == AnswerYes {
-			result.SatisfiedPoints += question.Weight
+			result.SatisfiedPoints++
 			continue
 		}
 		result.FailedQuestionIDs = append(result.FailedQuestionIDs, question.ID)

@@ -44,20 +44,26 @@ func TestAPIContracts(t *testing.T) {
 		store.checklists["succeeded"] = db.Checklist{
 			ID:     "succeeded",
 			Status: db.StatusSucceeded,
-			Questions: []evalcore.CandidateQuestion{
-				{ID: "q1", Ordinal: 1, Rationale: "duplicate", Question: "Excluded?"},
-				{ID: "q2", Ordinal: 2, Rationale: "important", Question: "Active?"},
+			Dimensions: []evalcore.Dimension{
+				{ID: "d1", Ordinal: 1, Name: "Correctness", Rubric: "Check correctness.", Rationale: "Core."},
+			},
+			CandidateQuestions: []evalcore.CandidateQuestion{
+				{ID: "c1", DimensionID: "d1", Ordinal: 1, Rationale: "duplicate", Question: "Excluded?"},
+				{ID: "c2", DimensionID: "d1", Ordinal: 2, Rationale: "important", Question: "Active?"},
 			},
 			Weights: []evalcore.Weight{
-				{QuestionID: "q1", Rationale: "duplicate", Weight: 0},
-				{QuestionID: "q2", Rationale: "important", Weight: 4},
+				{CandidateQuestionID: "c1", Rationale: "duplicate", Weight: 0},
+				{CandidateQuestionID: "c2", Rationale: "important", Weight: 1},
+			},
+			Questions: []evalcore.FinalQuestion{
+				{ID: "q1", Ordinal: 1, DimensionID: "d1", SourceCandidateID: "c2", Rationale: "important", Question: "Active?"},
 			},
 		}
 		resp := request(t, router, http.MethodGet, "/checklists/succeeded", "")
 		assertStatus(t, resp, http.StatusOK)
 		var got map[string]any
 		decodeBody(t, resp, &got)
-		if got["status"] != "succeeded" || len(got["questions"].([]any)) != 2 || len(got["weights"].([]any)) != 2 {
+		if got["status"] != "succeeded" || len(got["dimensions"].([]any)) != 1 || len(got["candidate_questions"].([]any)) != 2 || len(got["questions"].([]any)) != 1 || len(got["weights"].([]any)) != 2 {
 			t.Fatalf("unexpected checklist success body: %#v", got)
 		}
 	})

@@ -5,7 +5,10 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strconv"
 	"strings"
+
+	"github.com/kirilligum/self-imp-bin-eval/internal/evalcore"
 )
 
 const RedactionToken = "[REDACTED]"
@@ -40,6 +43,7 @@ type Config struct {
 	URL             string
 	ListenAddr      string
 	GitSHA          string
+	ChecklistLimits evalcore.ChecklistLimits
 }
 
 func Load() (Config, error) {
@@ -62,6 +66,10 @@ func Load() (Config, error) {
 		return value
 	}
 
+	limits, err := loadChecklistLimits()
+	if err != nil {
+		return Config{}, err
+	}
 	cfg := Config{
 		Env:             get("BIN_EVAL_ENV"),
 		DatabaseURL:     get("BIN_EVAL_DATABASE_URL"),
@@ -77,6 +85,7 @@ func Load() (Config, error) {
 		URL:             get("BIN_EVAL_URL"),
 		ListenAddr:      get("BIN_EVAL_LISTEN_ADDR"),
 		GitSHA:          strings.TrimSpace(os.Getenv("BIN_EVAL_GIT_SHA")),
+		ChecklistLimits: limits,
 	}
 	if len(missing) > 0 {
 		return Config{}, fmt.Errorf("missing required environment variables: %s", strings.Join(missing, ", "))
@@ -116,6 +125,36 @@ func getenvDefault(name, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func loadChecklistLimits() (evalcore.ChecklistLimits, error) {
+	limits := evalcore.DefaultChecklistLimits()
+	var err error
+	if limits.MaxDimensions, err = getenvPositiveInt("BIN_EVAL_MAX_DIMENSIONS", limits.MaxDimensions); err != nil {
+		return evalcore.ChecklistLimits{}, err
+	}
+	if limits.MaxCandidatesPerDimension, err = getenvPositiveInt("BIN_EVAL_MAX_CANDIDATES_PER_DIMENSION", limits.MaxCandidatesPerDimension); err != nil {
+		return evalcore.ChecklistLimits{}, err
+	}
+	if limits.MaxSplitCount, err = getenvPositiveInt("BIN_EVAL_MAX_SPLIT_COUNT", limits.MaxSplitCount); err != nil {
+		return evalcore.ChecklistLimits{}, err
+	}
+	if limits.MaxFinalQuestions, err = getenvPositiveInt("BIN_EVAL_MAX_FINAL_QUESTIONS", limits.MaxFinalQuestions); err != nil {
+		return evalcore.ChecklistLimits{}, err
+	}
+	return limits, nil
+}
+
+func getenvPositiveInt(name string, fallback int) (int, error) {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return fallback, nil
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed <= 0 {
+		return 0, fmt.Errorf("%s must be a positive integer", name)
+	}
+	return parsed, nil
 }
 
 func validateListenAddr(addr string) error {

@@ -18,8 +18,8 @@ func TestGarageArtifactWriterAndKeyLayout(t *testing.T) {
 	expected := []string{
 		"checklists/" + checklistID + "/inputs/task.txt",
 		"checklists/" + checklistID + "/inputs/context.txt",
-		"checklists/" + checklistID + "/llm/question_generation/request.json",
-		"checklists/" + checklistID + "/llm/question_generation/response.json",
+		"checklists/" + checklistID + "/llm/dimension_analysis/request.json",
+		"checklists/" + checklistID + "/llm/dimension_analysis/response.json",
 		"checklists/" + checklistID + "/llm/weight_assignment/request.json",
 		"checklists/" + checklistID + "/llm/weight_assignment/response.json",
 		"evaluations/" + evaluationID + "/inputs/model_answer.txt",
@@ -40,7 +40,7 @@ func TestGarageArtifactWriterAndKeyLayout(t *testing.T) {
 	defer cancel()
 	writer := newTestGarageWriter(t)
 	payload := []byte("byte-preserving artifact payload\n")
-	key := ChecklistLLMResponseKey(checklistID, PromptQuestionGeneration)
+	key := ChecklistDimensionQuestionGenerationResponseKey(checklistID, "d1")
 
 	waitForGarage(t, ctx, func() error {
 		return writer.Write(ctx, key, payload)

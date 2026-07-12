@@ -8,44 +8,53 @@ import (
 	"github.com/kirilligum/self-imp-bin-eval/internal/evalcore"
 )
 
-// TEST-006
-func TestOutputSchemasAndPrompts(t *testing.T) {
-	t.Run("schemas describe required output families", func(t *testing.T) {
-		questionSchema := QuestionGenerationSchema()
-		questionBytes, _ := json.Marshal(questionSchema)
-		if !strings.Contains(string(questionBytes), `"questions"`) {
-			t.Fatalf("question schema missing questions: %s", questionBytes)
-		}
+// TEST-001
+func TestRubricRefinementSchemasAndPrompts(t *testing.T) {
+	limits := evalcore.DefaultChecklistLimits()
 
-		weightSchema := WeightAssignmentSchema()
-		weightBytes, _ := json.Marshal(weightSchema)
-		for _, want := range []string{`"minimum":0`, `"maximum":4`, `"question_id"`, `"rationale"`} {
-			if !strings.Contains(string(weightBytes), want) {
-				t.Fatalf("weight schema missing %s: %s", want, weightBytes)
+	t.Run("schemas describe required output families", func(t *testing.T) {
+		for name, schema := range map[string]JSONSchema{
+			"dimension_analysis":  DimensionAnalysisSchema(limits),
+			"question_generation": QuestionGenerationSchema(limits),
+			"weight_assignment":   WeightAssignmentSchema(limits, 2),
+			"question_splitting":  QuestionSplittingSchema(limits, 2),
+			"binary_judging":      BinaryJudgingSchema(2),
+		} {
+			schemaBytes, _ := json.Marshal(schema)
+			if !strings.Contains(string(schemaBytes), `"additionalProperties":false`) {
+				t.Fatalf("%s schema is not strict: %s", name, schemaBytes)
 			}
 		}
 
-		judgeSchema := BinaryJudgingSchema()
-		judgeBytes, _ := json.Marshal(judgeSchema)
-		for _, want := range []string{`"judgments"`, `"evidence"`, `"yes"`, `"no"`} {
-			if !strings.Contains(string(judgeBytes), want) {
-				t.Fatalf("judge schema missing %s: %s", want, judgeBytes)
+		weightBytes, _ := json.Marshal(WeightAssignmentSchema(limits, 2))
+		for _, want := range []string{`"candidate_question_id"`, `"enum":[0,1,2,3,4]`, `"rationale"`} {
+			if !strings.Contains(string(weightBytes), want) {
+				t.Fatalf("weight schema missing %s: %s", want, weightBytes)
 			}
 		}
 	})
 
 	t.Run("output validation rejects structural violations", func(t *testing.T) {
+		if err := (DimensionAnalysisOutput{Dimensions: []evalcore.DraftDimension{{Name: "Correctness", Rubric: "Checks correctness.", Rationale: "Needed."}}}).Validate(); err != nil {
+			t.Fatalf("valid dimensions error = %v", err)
+		}
+		if err := (DimensionAnalysisOutput{}).Validate(); err == nil {
+			t.Fatal("empty dimensions unexpectedly valid")
+		}
 		if err := (QuestionGenerationOutput{Questions: []evalcore.DraftQuestion{{Rationale: "r", Question: "q?"}}}).Validate(); err != nil {
 			t.Fatalf("valid questions error = %v", err)
 		}
 		if err := (QuestionGenerationOutput{}).Validate(); err == nil {
 			t.Fatal("empty questions unexpectedly valid")
 		}
-		if err := (WeightAssignmentOutput{Weights: []evalcore.Weight{{QuestionID: "q1", Rationale: "r", Weight: 0}}}).Validate(); err != nil {
+		if err := (WeightAssignmentOutput{Weights: []evalcore.Weight{{CandidateQuestionID: "c1", Rationale: "duplicate", Weight: 0}}}).Validate(); err != nil {
 			t.Fatalf("valid weight zero error = %v", err)
 		}
-		if err := (WeightAssignmentOutput{Weights: []evalcore.Weight{{QuestionID: "q1", Rationale: "r", Weight: 5}}}).Validate(); err == nil {
+		if err := (WeightAssignmentOutput{Weights: []evalcore.Weight{{CandidateQuestionID: "c1", Rationale: "r", Weight: 5}}}).Validate(); err == nil {
 			t.Fatal("weight 5 unexpectedly valid")
+		}
+		if err := (QuestionSplittingOutput{Questions: []evalcore.DraftQuestion{{Rationale: "r", Question: "q?"}}}).Validate(); err != nil {
+			t.Fatalf("valid split error = %v", err)
 		}
 		if err := (BinaryJudgingOutput{Judgments: []evalcore.Judgment{{QuestionID: "q1", Evidence: "e", Answer: evalcore.AnswerYes}}}).Validate(); err != nil {
 			t.Fatalf("valid judgment error = %v", err)
@@ -55,23 +64,49 @@ func TestOutputSchemasAndPrompts(t *testing.T) {
 		}
 	})
 
-	t.Run("checklist creation prompt excludes model answer", func(t *testing.T) {
-		req := BuildQuestionGenerationRequest("task text", "context text", "checklist-evaluator")
-		payload := marshalString(t, req)
-		if strings.Contains(payload, "model_answer") {
-			t.Fatalf("question generation prompt contains model_answer: %s", payload)
+	t.Run("prompts use shared question requirements without fixed generation count or json examples", func(t *testing.T) {
+		dimension := evalcore.Dimension{ID: "d1", Ordinal: 1, Name: "Correctness", Rubric: "Check correctness.", Rationale: "Core."}
+		generation := BuildQuestionGenerationRequest("task text", "context text", "checklist-evaluator", dimension, limits)
+		splitting := BuildQuestionSplittingRequest("task text", "context text", "checklist-evaluator", evalcore.CandidateQuestion{
+			ID: "c1", DimensionID: "d1", Ordinal: 1, Rationale: "r", Question: "Does it work?",
+		}, evalcore.Weight{CandidateQuestionID: "c1", Rationale: "split", Weight: 2}, limits)
+
+		for _, req := range []GenerateRequest{generation, splitting} {
+			payload := marshalString(t, req)
+			for _, shared := range []string{QuestionRequirementsPrompt, QuestionOutputPrompt} {
+				if !strings.Contains(payload, shared) {
+					t.Fatalf("%s prompt missing shared fragment %q: %s", req.PromptName, shared, payload)
+				}
+			}
+			for _, forbidden := range []string{"Generate 5 to 8", "strong answer", "weak answer", "Return only JSON", `"questions":[`} {
+				if strings.Contains(payload, forbidden) {
+					t.Fatalf("%s prompt contains forbidden %q: %s", req.PromptName, forbidden, payload)
+				}
+			}
 		}
-		if !strings.Contains(payload, "task text") || !strings.Contains(payload, "context text") {
-			t.Fatalf("question generation prompt missing task/context: %s", payload)
+	})
+
+	t.Run("weight prompt explains duplicate deletion", func(t *testing.T) {
+		req := BuildWeightAssignmentRequest("task", "context", "checklist-evaluator", []evalcore.CandidateQuestion{
+			{ID: "c1", DimensionID: "d1", Ordinal: 1, Rationale: "r", Question: "Does it mention alpha?"},
+		}, limits)
+		payload := marshalString(t, req)
+		for _, want := range []string{"weight", "0 to delete duplicate", "1 for normal", "higher integer"} {
+			if !strings.Contains(payload, want) {
+				t.Fatalf("weight prompt missing %q: %s", want, payload)
+			}
+		}
+		if strings.Contains(payload, "Return only JSON") {
+			t.Fatalf("weight prompt mentions JSON shape: %s", payload)
 		}
 	})
 
 	t.Run("judging prompt excludes weights and rationales", func(t *testing.T) {
-		req := BuildBinaryJudgingRequest("task", "context", "answer", "checklist-evaluator", []evalcore.ActiveQuestion{
-			{ID: "q2", Question: "Does it mention alpha?", Weight: 4},
+		req := BuildBinaryJudgingRequest("task", "context", "answer", "checklist-evaluator", []evalcore.FinalQuestion{
+			{ID: "q2", Question: "Does it mention alpha?"},
 		})
 		payload := marshalString(t, req)
-		for _, forbidden := range []string{"weight", "rationale"} {
+		for _, forbidden := range []string{"weight", "rationale", "candidate"} {
 			if strings.Contains(payload, forbidden) {
 				t.Fatalf("judging prompt contains %q: %s", forbidden, payload)
 			}

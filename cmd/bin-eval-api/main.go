@@ -34,8 +34,9 @@ func main() {
 	handler := api.NewRouter(api.Dependencies{
 		Store: store,
 		Starter: api.TemporalStarter{
-			Client:    temporalClient,
-			TaskQueue: cfg.TemporalTaskQ,
+			Client:          temporalClient,
+			TaskQueue:       cfg.TemporalTaskQ,
+			ChecklistLimits: cfg.ChecklistLimits,
 		},
 	})
 	log.Printf("bin-eval-api listening on %s", cfg.ListenAddr)

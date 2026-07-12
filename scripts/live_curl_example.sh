@@ -72,9 +72,12 @@ poll_entity "${BIN_EVAL_URL}/checklists/${checklist_id}" "${DEBUG_DIR}/checklist
 jq -e '
   . as $root |
   $root.status == "succeeded" and
+  ($root.dimensions | type == "array" and length > 0) and
+  ($root.candidate_questions | type == "array" and length > 0) and
   ($root.questions | type == "array" and length > 0) and
-  ($root.weights | type == "array" and length == ($root.questions | length)) and
-  all($root.weights[]; has("question_id") and has("weight"))
+  ($root.weights | type == "array" and length == ($root.candidate_questions | length)) and
+  all($root.weights[]; has("candidate_question_id") and has("rationale") and has("weight")) and
+  all($root.questions[]; has("id") and has("dimension_id") and has("source_candidate_id") and has("question"))
 ' "${DEBUG_DIR}/checklist.json" >/dev/null
 
 evaluation_payload="$(jq -n --arg id "$checklist_id" --rawfile answer "${CASE_DIR}/model_answer_good.txt" '{checklist_id:$id, model_answer:$answer}')"
@@ -104,7 +107,9 @@ jq -n \
     api_url: $api_url,
     checklist_id: $checklist[0].checklist_id,
     checklist_status: $checklist[0].status,
-    question_count: ($checklist[0].questions | length),
+    dimension_count: ($checklist[0].dimensions | length),
+    candidate_question_count: ($checklist[0].candidate_questions | length),
+    final_question_count: ($checklist[0].questions | length),
     weights: $checklist[0].weights,
     evaluation_id: $evaluation[0].evaluation_id,
     evaluation_status: $evaluation[0].status,

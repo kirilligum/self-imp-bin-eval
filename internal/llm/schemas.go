@@ -12,12 +12,20 @@ type Validatable interface {
 	Validate() error
 }
 
+type DimensionAnalysisOutput struct {
+	Dimensions []evalcore.DraftDimension `json:"dimensions"`
+}
+
+func (o DimensionAnalysisOutput) Validate() error {
+	return evalcore.ValidateDimensionGeneration(o.Dimensions, evalcore.DefaultChecklistLimits())
+}
+
 type QuestionGenerationOutput struct {
 	Questions []evalcore.DraftQuestion `json:"questions"`
 }
 
 func (o QuestionGenerationOutput) Validate() error {
-	return evalcore.ValidateQuestionGeneration(o.Questions)
+	return evalcore.ValidateQuestionGeneration(o.Questions, evalcore.DefaultChecklistLimits())
 }
 
 type WeightAssignmentOutput struct {
@@ -29,14 +37,33 @@ func (o WeightAssignmentOutput) Validate() error {
 		return &ModelOutputError{Message: "weight assignment returned no weights"}
 	}
 	for _, weight := range o.Weights {
-		if strings.TrimSpace(weight.QuestionID) == "" {
-			return &ModelOutputError{Message: "weight assignment returned blank question_id"}
+		if strings.TrimSpace(weight.CandidateQuestionID) == "" {
+			return &ModelOutputError{Message: "weight assignment returned blank candidate_question_id"}
 		}
 		if strings.TrimSpace(weight.Rationale) == "" {
 			return &ModelOutputError{Message: "weight assignment returned blank rationale"}
 		}
-		if weight.Weight < 0 || weight.Weight > 4 {
+		if weight.Weight < 0 || weight.Weight > evalcore.DefaultMaxSplitCount {
 			return &ModelOutputError{Message: "weight assignment returned weight outside 0..4"}
+		}
+	}
+	return nil
+}
+
+type QuestionSplittingOutput struct {
+	Questions []evalcore.DraftQuestion `json:"questions"`
+}
+
+func (o QuestionSplittingOutput) Validate() error {
+	if len(o.Questions) == 0 {
+		return &ModelOutputError{Message: "question splitting returned no questions"}
+	}
+	for _, question := range o.Questions {
+		if strings.TrimSpace(question.Rationale) == "" {
+			return &ModelOutputError{Message: "question splitting returned blank rationale"}
+		}
+		if strings.TrimSpace(question.Question) == "" {
+			return &ModelOutputError{Message: "question splitting returned blank question"}
 		}
 	}
 	return nil
@@ -64,22 +91,48 @@ func (o BinaryJudgingOutput) Validate() error {
 	return nil
 }
 
-func QuestionGenerationSchema() JSONSchema {
+func DimensionAnalysisSchema(limits evalcore.ChecklistLimits) JSONSchema {
+	limits = limits.WithDefaults()
+	return JSONSchema{
+		"type":                 "object",
+		"additionalProperties": false,
+		"required":             []string{"dimensions"},
+		"properties": map[string]any{
+			"dimensions": map[string]any{
+				"type":     "array",
+				"minItems": 1,
+				"maxItems": limits.MaxDimensions,
+				"items": map[string]any{
+					"type":                 "object",
+					"additionalProperties": false,
+					"required":             []string{"name", "rubric", "rationale"},
+					"properties": map[string]any{
+						"name":      map[string]any{"type": "string"},
+						"rubric":    map[string]any{"type": "string"},
+						"rationale": map[string]any{"type": "string"},
+					},
+				},
+			},
+		},
+	}
+}
+
+func QuestionGenerationSchema(limits evalcore.ChecklistLimits) JSONSchema {
+	limits = limits.WithDefaults()
 	return JSONSchema{
 		"type":                 "object",
 		"additionalProperties": false,
 		"required":             []string{"questions"},
 		"properties": map[string]any{
 			"questions": map[string]any{
-				"type":     "array",
-				"minItems": 1,
+				"type": "array",
 				"items": map[string]any{
 					"type":                 "object",
 					"additionalProperties": false,
 					"required":             []string{"rationale", "question"},
 					"properties": map[string]any{
-						"rationale": map[string]any{"type": "string", "minLength": 1},
-						"question":  map[string]any{"type": "string", "minLength": 1},
+						"rationale": map[string]any{"type": "string"},
+						"question":  map[string]any{"type": "string"},
 					},
 				},
 			},
@@ -87,23 +140,27 @@ func QuestionGenerationSchema() JSONSchema {
 	}
 }
 
-func WeightAssignmentSchema() JSONSchema {
+func WeightAssignmentSchema(limits evalcore.ChecklistLimits, candidateCount int) JSONSchema {
+	limits = limits.WithDefaults()
+	weightValues := make([]int, 0, limits.MaxSplitCount+1)
+	for i := 0; i <= limits.MaxSplitCount; i++ {
+		weightValues = append(weightValues, i)
+	}
 	return JSONSchema{
 		"type":                 "object",
 		"additionalProperties": false,
 		"required":             []string{"weights"},
 		"properties": map[string]any{
 			"weights": map[string]any{
-				"type":     "array",
-				"minItems": 1,
+				"type": "array",
 				"items": map[string]any{
 					"type":                 "object",
 					"additionalProperties": false,
-					"required":             []string{"question_id", "rationale", "weight"},
+					"required":             []string{"candidate_question_id", "rationale", "weight"},
 					"properties": map[string]any{
-						"question_id": map[string]any{"type": "string", "minLength": 1},
-						"rationale":   map[string]any{"type": "string", "minLength": 1},
-						"weight":      map[string]any{"type": "integer", "minimum": 0, "maximum": 4},
+						"candidate_question_id": map[string]any{"type": "string"},
+						"rationale":             map[string]any{"type": "string"},
+						"weight":                map[string]any{"type": "integer", "enum": weightValues},
 					},
 				},
 			},
@@ -111,22 +168,44 @@ func WeightAssignmentSchema() JSONSchema {
 	}
 }
 
-func BinaryJudgingSchema() JSONSchema {
+func QuestionSplittingSchema(limits evalcore.ChecklistLimits, splitCount int) JSONSchema {
+	limits = limits.WithDefaults()
+	return JSONSchema{
+		"type":                 "object",
+		"additionalProperties": false,
+		"required":             []string{"questions"},
+		"properties": map[string]any{
+			"questions": map[string]any{
+				"type": "array",
+				"items": map[string]any{
+					"type":                 "object",
+					"additionalProperties": false,
+					"required":             []string{"rationale", "question"},
+					"properties": map[string]any{
+						"rationale": map[string]any{"type": "string"},
+						"question":  map[string]any{"type": "string"},
+					},
+				},
+			},
+		},
+	}
+}
+
+func BinaryJudgingSchema(questionCount int) JSONSchema {
 	return JSONSchema{
 		"type":                 "object",
 		"additionalProperties": false,
 		"required":             []string{"judgments"},
 		"properties": map[string]any{
 			"judgments": map[string]any{
-				"type":     "array",
-				"minItems": 1,
+				"type": "array",
 				"items": map[string]any{
 					"type":                 "object",
 					"additionalProperties": false,
 					"required":             []string{"question_id", "evidence", "answer"},
 					"properties": map[string]any{
-						"question_id": map[string]any{"type": "string", "minLength": 1},
-						"evidence":    map[string]any{"type": "string", "minLength": 1},
+						"question_id": map[string]any{"type": "string"},
+						"evidence":    map[string]any{"type": "string"},
 						"answer":      map[string]any{"type": "string", "enum": []string{evalcore.AnswerYes, evalcore.AnswerNo}},
 					},
 				},

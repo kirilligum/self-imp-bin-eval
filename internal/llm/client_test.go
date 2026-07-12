@@ -48,7 +48,7 @@ func TestGenerateJSONClient(t *testing.T) {
 
 		client := NewHTTPClient(server.URL, "test-key", server.Client())
 		var out QuestionGenerationOutput
-		err := client.GenerateJSON(context.Background(), BuildQuestionGenerationRequest("task", "context", "checklist-evaluator"), &out)
+		err := client.GenerateJSON(context.Background(), testQuestionGenerationRequest("checklist-evaluator"), &out)
 		if err != nil {
 			t.Fatalf("GenerateJSON() error = %v", err)
 		}
@@ -68,7 +68,7 @@ func TestGenerateJSONClient(t *testing.T) {
 
 		client := NewHTTPClient(server.URL, "", server.Client())
 		var out QuestionGenerationOutput
-		err := client.GenerateJSON(context.Background(), BuildQuestionGenerationRequest("task", "context", "model"), &out)
+		err := client.GenerateJSON(context.Background(), testQuestionGenerationRequest("model"), &out)
 		assertModelOutputError(t, err)
 	})
 
@@ -80,7 +80,7 @@ func TestGenerateJSONClient(t *testing.T) {
 
 		client := NewHTTPClient(server.URL, "", server.Client())
 		var out QuestionGenerationOutput
-		err := client.GenerateJSON(context.Background(), BuildQuestionGenerationRequest("task", "context", "model"), &out)
+		err := client.GenerateJSON(context.Background(), testQuestionGenerationRequest("model"), &out)
 		assertModelOutputError(t, err)
 	})
 
@@ -92,7 +92,7 @@ func TestGenerateJSONClient(t *testing.T) {
 
 		client := NewHTTPClient(server.URL, "", server.Client())
 		var out QuestionGenerationOutput
-		err := client.GenerateJSON(context.Background(), BuildQuestionGenerationRequest("task", "context", "model"), &out)
+		err := client.GenerateJSON(context.Background(), testQuestionGenerationRequest("model"), &out)
 		if !IsRetryableInfraError(err) {
 			t.Fatalf("error = %T %v, want retryable infra", err, err)
 		}
@@ -133,3 +133,13 @@ func assertModelOutputError(t *testing.T, err error) {
 }
 
 var _ = evalcore.AnswerYes
+
+func testQuestionGenerationRequest(model string) GenerateRequest {
+	return BuildQuestionGenerationRequest("task", "context", model, evalcore.Dimension{
+		ID:        "d1",
+		Ordinal:   1,
+		Name:      "Correctness",
+		Rubric:    "Check correctness.",
+		Rationale: "Core dimension.",
+	}, evalcore.DefaultChecklistLimits())
+}

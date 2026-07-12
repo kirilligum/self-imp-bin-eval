@@ -24,7 +24,7 @@ func (a *Activities) LoadChecklist(ctx context.Context, in LoadChecklistInput) (
 }
 
 func (a *Activities) SucceedChecklist(ctx context.Context, in SucceedChecklistInput) error {
-	return ToTemporalError(a.store.SucceedChecklist(ctx, in.ChecklistID, in.Questions, in.Weights))
+	return ToTemporalError(a.store.SucceedChecklist(ctx, in.ChecklistID, in.Dimensions, in.CandidateQuestions, in.Weights, in.Questions))
 }
 
 func (a *Activities) FailChecklist(ctx context.Context, in FailChecklistInput) error {

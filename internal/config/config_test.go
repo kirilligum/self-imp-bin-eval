@@ -40,6 +40,9 @@ func TestConfigValidation(t *testing.T) {
 		if cfg.ListenAddr != "127.0.0.1:8080" {
 			t.Fatalf("ListenAddr = %q", cfg.ListenAddr)
 		}
+		if cfg.ChecklistLimits.MaxDimensions != 6 || cfg.ChecklistLimits.MaxCandidatesPerDimension != 8 || cfg.ChecklistLimits.MaxSplitCount != 4 || cfg.ChecklistLimits.MaxFinalQuestions != 64 {
+			t.Fatalf("ChecklistLimits = %#v", cfg.ChecklistLimits)
+		}
 		redacted := cfg.RedactSecrets("prefix garage-secret-value and llm-secret-value suffix")
 		if strings.Contains(redacted, "garage-secret-value") || strings.Contains(redacted, "llm-secret-value") {
 			t.Fatalf("secret values were not redacted: %q", redacted)
@@ -76,6 +79,35 @@ func TestConfigValidation(t *testing.T) {
 		}
 		if !strings.Contains(err.Error(), "BIN_EVAL_LISTEN_ADDR") {
 			t.Fatalf("error = %v, want listen address context", err)
+		}
+	})
+
+	t.Run("loads checklist limit overrides", func(t *testing.T) {
+		setRequiredEnv(t)
+		t.Setenv("BIN_EVAL_MAX_DIMENSIONS", "7")
+		t.Setenv("BIN_EVAL_MAX_CANDIDATES_PER_DIMENSION", "9")
+		t.Setenv("BIN_EVAL_MAX_SPLIT_COUNT", "5")
+		t.Setenv("BIN_EVAL_MAX_FINAL_QUESTIONS", "80")
+
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("Load() error = %v", err)
+		}
+		if cfg.ChecklistLimits.MaxDimensions != 7 || cfg.ChecklistLimits.MaxCandidatesPerDimension != 9 || cfg.ChecklistLimits.MaxSplitCount != 5 || cfg.ChecklistLimits.MaxFinalQuestions != 80 {
+			t.Fatalf("ChecklistLimits = %#v", cfg.ChecklistLimits)
+		}
+	})
+
+	t.Run("rejects invalid checklist limit overrides", func(t *testing.T) {
+		setRequiredEnv(t)
+		t.Setenv("BIN_EVAL_MAX_FINAL_QUESTIONS", "nope")
+
+		_, err := Load()
+		if err == nil {
+			t.Fatal("expected limit parse error")
+		}
+		if !strings.Contains(err.Error(), "BIN_EVAL_MAX_FINAL_QUESTIONS") {
+			t.Fatalf("error = %v, want limit name", err)
 		}
 	})
 }

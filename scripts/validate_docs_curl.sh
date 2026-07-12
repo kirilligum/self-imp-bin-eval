@@ -26,6 +26,10 @@ for pattern in \
   'POST /evaluations' \
   'GET /evaluations/' \
   'checklist_id' \
+  'dimensions' \
+  'candidate_questions' \
+  'candidate_question_id' \
+  'final_question_count' \
   'evaluation_id' \
   'satisfied_points' \
   'total_possible_points' \

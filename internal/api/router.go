@@ -46,8 +46,9 @@ func NewRouter(deps Dependencies) http.Handler {
 }
 
 type TemporalStarter struct {
-	Client    client.Client
-	TaskQueue string
+	Client          client.Client
+	TaskQueue       string
+	ChecklistLimits evalcore.ChecklistLimits
 }
 
 func (s TemporalStarter) StartCreateChecklist(ctx context.Context, checklistID, task, contextText string) error {
@@ -58,6 +59,7 @@ func (s TemporalStarter) StartCreateChecklist(ctx context.Context, checklistID, 
 		ChecklistID: checklistID,
 		Task:        task,
 		Context:     contextText,
+		Limits:      s.ChecklistLimits.WithDefaults(),
 	})
 	return err
 }
@@ -95,11 +97,13 @@ type acceptedEvaluationResponse struct {
 }
 
 type checklistResponse struct {
-	ChecklistID  string                       `json:"checklist_id"`
-	Status       string                       `json:"status"`
-	ErrorMessage *string                      `json:"error_message,omitempty"`
-	Questions    []evalcore.CandidateQuestion `json:"questions,omitempty"`
-	Weights      []evalcore.Weight            `json:"weights,omitempty"`
+	ChecklistID        string                       `json:"checklist_id"`
+	Status             string                       `json:"status"`
+	ErrorMessage       *string                      `json:"error_message,omitempty"`
+	Dimensions         []evalcore.Dimension         `json:"dimensions,omitempty"`
+	CandidateQuestions []evalcore.CandidateQuestion `json:"candidate_questions,omitempty"`
+	Weights            []evalcore.Weight            `json:"weights,omitempty"`
+	Questions          []evalcore.FinalQuestion     `json:"questions,omitempty"`
 }
 
 type evaluationResponse struct {
@@ -143,8 +147,10 @@ func (r *Router) getChecklist(w http.ResponseWriter, req *http.Request) {
 		resp.ErrorMessage = checklist.ErrorMessage
 	}
 	if checklist.Status == db.StatusSucceeded {
-		resp.Questions = checklist.Questions
+		resp.Dimensions = checklist.Dimensions
+		resp.CandidateQuestions = checklist.CandidateQuestions
 		resp.Weights = checklist.Weights
+		resp.Questions = checklist.Questions
 	}
 	writeJSON(w, http.StatusOK, resp)
 }

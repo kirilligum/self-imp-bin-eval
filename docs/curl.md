@@ -80,7 +80,7 @@ set checklist_id (jq -r '.checklist_id' debug/live-curl/create_checklist.json)
 printf 'checklist_id=%s\n' "$checklist_id"
 ```
 
-Poll the checklist until questions and weights are ready:
+Poll the checklist until dimensions, candidate questions, diagnostic weights, and final questions are ready:
 
 ```fish
 for attempt in (seq 1 150)
@@ -90,8 +90,17 @@ for attempt in (seq 1 150)
 
   set checklist_state (jq -r '.status' debug/live-curl/checklist.json)
   if test "$checklist_state" = succeeded
-    # On success, the response contains generated binary questions and weights.
-    jq '{status, questions, weights}' debug/live-curl/checklist.json
+    # On success, dimensions and candidate_questions are diagnostic trace data.
+    # weights use candidate_question_id and explain delete/keep/split decisions.
+    # questions is the final binary checklist used for evaluation scoring.
+    jq '{
+      status,
+      dimension_count: (.dimensions | length),
+      candidate_question_count: (.candidate_questions | length),
+      final_question_count: (.questions | length),
+      weights,
+      questions
+    }' debug/live-curl/checklist.json
     break
   end
   if test "$checklist_state" = failed
@@ -173,7 +182,7 @@ It writes:
 - `debug/live-curl/evaluation.json`
 - `debug/live-curl/summary.json`
 
-The summary includes `checklist_id`, `evaluation_id`, `question_count`, `satisfied_points`, `total_possible_points`, `checklist_pass_rate`, `failed_question_ids`, and `judgment_count`.
+The summary includes `checklist_id`, `evaluation_id`, `dimension_count`, `candidate_question_count`, `final_question_count`, diagnostic `weights`, `satisfied_points`, `total_possible_points`, `checklist_pass_rate`, `failed_question_ids`, and `judgment_count`.
 
 ## Existing Smoke Path
 

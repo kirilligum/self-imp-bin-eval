@@ -33,15 +33,17 @@ func TestPostgresMigrationsAndConcreteStore(t *testing.T) {
 		t.Fatalf("CreateChecklist() error = %v", err)
 	}
 
-	questions := evalcore.AssignQuestionIDs([]evalcore.DraftQuestion{
-		{Rationale: "redundant", Question: "Excluded?"},
-		{Rationale: "important", Question: "Included?"},
-	})
-	weights := []evalcore.Weight{
-		{QuestionID: "q1", Rationale: "duplicate", Weight: 0},
-		{QuestionID: "q2", Rationale: "important", Weight: 4},
+	dimensions := []evalcore.Dimension{{ID: "d1", Ordinal: 1, Name: "Correctness", Rubric: "Check correctness.", Rationale: "Core."}}
+	candidates := []evalcore.CandidateQuestion{
+		{ID: "c1", DimensionID: "d1", Ordinal: 1, Rationale: "redundant", Question: "Excluded?"},
+		{ID: "c2", DimensionID: "d1", Ordinal: 2, Rationale: "important", Question: "Included?"},
 	}
-	if err := store.SucceedChecklist(ctx, checklistID, questions, weights); err != nil {
+	weights := []evalcore.Weight{
+		{CandidateQuestionID: "c1", Rationale: "duplicate", Weight: 0},
+		{CandidateQuestionID: "c2", Rationale: "important", Weight: 1},
+	}
+	finalQuestions := []evalcore.FinalQuestion{{ID: "q1", Ordinal: 1, DimensionID: "d1", SourceCandidateID: "c2", Rationale: "important", Question: "Included?"}}
+	if err := store.SucceedChecklist(ctx, checklistID, dimensions, candidates, weights, finalQuestions); err != nil {
 		t.Fatalf("SucceedChecklist() error = %v", err)
 	}
 	gotChecklist, err := store.GetChecklist(ctx, checklistID)
@@ -51,11 +53,17 @@ func TestPostgresMigrationsAndConcreteStore(t *testing.T) {
 	if gotChecklist.Status != StatusSucceeded {
 		t.Fatalf("checklist status = %s", gotChecklist.Status)
 	}
-	if len(gotChecklist.Weights) != 2 || gotChecklist.Weights[0].Weight != 0 || gotChecklist.Weights[1].Weight != 4 {
+	if len(gotChecklist.Weights) != 2 || gotChecklist.Weights[0].Weight != 0 || gotChecklist.Weights[1].Weight != 1 {
 		t.Fatalf("weights did not round-trip including zero: %#v", gotChecklist.Weights)
 	}
-	if len(gotChecklist.Questions) != 2 || gotChecklist.Questions[0].ID != "q1" || gotChecklist.Questions[1].ID != "q2" {
-		t.Fatalf("questions did not round-trip: %#v", gotChecklist.Questions)
+	if len(gotChecklist.Dimensions) != 1 || gotChecklist.Dimensions[0].ID != "d1" {
+		t.Fatalf("dimensions did not round-trip: %#v", gotChecklist.Dimensions)
+	}
+	if len(gotChecklist.CandidateQuestions) != 2 || gotChecklist.CandidateQuestions[0].ID != "c1" || gotChecklist.CandidateQuestions[1].ID != "c2" {
+		t.Fatalf("candidate questions did not round-trip: %#v", gotChecklist.CandidateQuestions)
+	}
+	if len(gotChecklist.Questions) != 1 || gotChecklist.Questions[0].ID != "q1" || gotChecklist.Questions[0].SourceCandidateID != "c2" {
+		t.Fatalf("final questions did not round-trip: %#v", gotChecklist.Questions)
 	}
 
 	runningChecklistID, err := store.CreateChecklist(ctx, "task", "context")
@@ -70,14 +78,14 @@ func TestPostgresMigrationsAndConcreteStore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateEvaluation() error = %v", err)
 	}
-	score, err := evalcore.ScoreChecklist(questions, weights, []evalcore.Judgment{
-		{QuestionID: "q2", Evidence: "It is included.", Answer: evalcore.AnswerYes},
+	score, err := evalcore.ScoreChecklist(finalQuestions, []evalcore.Judgment{
+		{QuestionID: "q1", Evidence: "It is included.", Answer: evalcore.AnswerYes},
 	})
 	if err != nil {
 		t.Fatalf("ScoreChecklist() error = %v", err)
 	}
 	if err := store.SucceedEvaluation(ctx, evaluationID, checklistID, []evalcore.Judgment{
-		{QuestionID: "q2", Evidence: "It is included.", Answer: evalcore.AnswerYes},
+		{QuestionID: "q1", Evidence: "It is included.", Answer: evalcore.AnswerYes},
 	}, score); err != nil {
 		t.Fatalf("SucceedEvaluation() error = %v", err)
 	}
@@ -85,10 +93,10 @@ func TestPostgresMigrationsAndConcreteStore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetEvaluation() error = %v", err)
 	}
-	if gotEvaluation.Status != StatusSucceeded || gotEvaluation.TotalPossiblePoints == nil || *gotEvaluation.TotalPossiblePoints != 4 {
+	if gotEvaluation.Status != StatusSucceeded || gotEvaluation.TotalPossiblePoints == nil || *gotEvaluation.TotalPossiblePoints != 1 {
 		t.Fatalf("evaluation did not round-trip score: %#v", gotEvaluation)
 	}
-	if len(gotEvaluation.Judgments) != 1 || gotEvaluation.Judgments[0].QuestionID != "q2" {
+	if len(gotEvaluation.Judgments) != 1 || gotEvaluation.Judgments[0].QuestionID != "q1" {
 		t.Fatalf("judgments did not round-trip active-only rows: %#v", gotEvaluation.Judgments)
 	}
 
@@ -129,14 +137,14 @@ func openTestPool(t *testing.T, ctx context.Context) *pgxpool.Pool {
 
 func cleanupDB(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
 	t.Helper()
-	if _, err := pool.Exec(ctx, "truncate judgments, evaluations, weights, questions, checklists restart identity cascade"); err != nil {
+	if _, err := pool.Exec(ctx, "truncate judgments, evaluations, question_weights, questions, candidate_questions, checklist_dimensions, checklists restart identity cascade"); err != nil {
 		t.Fatalf("cleanup error = %v", err)
 	}
 }
 
 func assertDuplicateWeightRejected(t *testing.T, ctx context.Context, pool *pgxpool.Pool, checklistID string) {
 	t.Helper()
-	_, err := pool.Exec(ctx, `insert into weights (checklist_id, question_id, rationale, weight) values ($1, 'q2', 'duplicate', 1)`, checklistID)
+	_, err := pool.Exec(ctx, `insert into question_weights (checklist_id, candidate_question_id, rationale, weight) values ($1, 'c2', 'duplicate', 1)`, checklistID)
 	if err == nil {
 		t.Fatal("duplicate weight insert unexpectedly succeeded")
 	}
@@ -144,7 +152,7 @@ func assertDuplicateWeightRejected(t *testing.T, ctx context.Context, pool *pgxp
 
 func assertDuplicateJudgmentRejected(t *testing.T, ctx context.Context, pool *pgxpool.Pool, evaluationID, checklistID string) {
 	t.Helper()
-	_, err := pool.Exec(ctx, `insert into judgments (evaluation_id, checklist_id, question_id, evidence, answer) values ($1, $2, 'q2', 'duplicate', 'yes')`, evaluationID, checklistID)
+	_, err := pool.Exec(ctx, `insert into judgments (evaluation_id, checklist_id, question_id, evidence, answer) values ($1, $2, 'q1', 'duplicate', 'yes')`, evaluationID, checklistID)
 	if err == nil {
 		t.Fatal("duplicate judgment insert unexpectedly succeeded")
 	}
@@ -156,8 +164,11 @@ func assertCrossChecklistJudgmentRejected(t *testing.T, ctx context.Context, sto
 	if err != nil {
 		t.Fatalf("CreateChecklist other error = %v", err)
 	}
-	otherQuestions := evalcore.AssignQuestionIDs([]evalcore.DraftQuestion{{Rationale: "r", Question: "Other?"}})
-	if err := store.SucceedChecklist(ctx, otherID, otherQuestions, []evalcore.Weight{{QuestionID: "q1", Rationale: "r", Weight: 1}}); err != nil {
+	otherDimensions := []evalcore.Dimension{{ID: "d1", Ordinal: 1, Name: "Other", Rubric: "Other.", Rationale: "Other."}}
+	otherCandidates := []evalcore.CandidateQuestion{{ID: "c1", DimensionID: "d1", Ordinal: 1, Rationale: "r", Question: "Other?"}}
+	otherWeights := []evalcore.Weight{{CandidateQuestionID: "c1", Rationale: "r", Weight: 1}}
+	otherFinal := []evalcore.FinalQuestion{{ID: "q1", Ordinal: 1, DimensionID: "d1", SourceCandidateID: "c1", Rationale: "r", Question: "Other?"}}
+	if err := store.SucceedChecklist(ctx, otherID, otherDimensions, otherCandidates, otherWeights, otherFinal); err != nil {
 		t.Fatalf("SucceedChecklist other error = %v", err)
 	}
 	_, err = pool.Exec(ctx, `insert into judgments (evaluation_id, checklist_id, question_id, evidence, answer) values ($1, $2, 'q1', 'cross', 'yes')`, evaluationID, otherID)

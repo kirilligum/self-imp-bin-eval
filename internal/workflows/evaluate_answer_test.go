@@ -17,13 +17,16 @@ func TestEvaluateAnswerWorkflow(t *testing.T) {
 	env.RegisterWorkflow(EvaluateAnswerWorkflow)
 	registerActivityNames(env)
 
-	questions := evalcore.AssignQuestionIDs([]evalcore.DraftQuestion{
-		{Rationale: "excluded", Question: "Excluded?"},
-		{Rationale: "active", Question: "Active?"},
-	})
-	weights := []evalcore.Weight{{QuestionID: "q1", Rationale: "duplicate", Weight: 0}, {QuestionID: "q2", Rationale: "important", Weight: 4}}
-	judgments := []evalcore.Judgment{{QuestionID: "q2", Evidence: "Satisfied.", Answer: evalcore.AnswerYes}}
-	checklist := db.Checklist{ID: "checklist-1", Status: db.StatusSucceeded, Questions: questions, Weights: weights}
+	finalQuestions := []evalcore.FinalQuestion{
+		{ID: "q1", Ordinal: 1, DimensionID: "d1", SourceCandidateID: "c1", Rationale: "normal", Question: "Normal?"},
+		{ID: "q2", Ordinal: 2, DimensionID: "d2", SourceCandidateID: "c2", Rationale: "detail", Question: "Specific?"},
+	}
+	weights := []evalcore.Weight{{CandidateQuestionID: "c1", Rationale: "normal", Weight: 1}, {CandidateQuestionID: "c2", Rationale: "split", Weight: 2}}
+	judgments := []evalcore.Judgment{
+		{QuestionID: "q1", Evidence: "Satisfied.", Answer: evalcore.AnswerYes},
+		{QuestionID: "q2", Evidence: "Missing.", Answer: evalcore.AnswerNo},
+	}
+	checklist := db.Checklist{ID: "checklist-1", Status: db.StatusSucceeded, Questions: finalQuestions, Weights: weights}
 
 	input := EvaluateAnswerInput{EvaluationID: "evaluation-1", ChecklistID: "checklist-1", ModelAnswer: "answer"}
 	env.OnActivity(activities.ActivityWriteEvaluationInput, mock.Anything, activities.WriteEvaluationInputInput{
@@ -32,14 +35,14 @@ func TestEvaluateAnswerWorkflow(t *testing.T) {
 	env.OnActivity(activities.ActivityLoadChecklist, mock.Anything, activities.LoadChecklistInput{ChecklistID: "checklist-1"}).
 		Return(activities.LoadChecklistResult{Checklist: checklist, Task: "task", Context: "context"}, nil).Once()
 	env.OnActivity(activities.ActivityJudgeAnswer, mock.Anything, mock.MatchedBy(func(in activities.JudgeAnswerInput) bool {
-		activePayload, err := evalcore.BuildActiveChecklist(in.Questions, in.Weights)
-		return err == nil && len(activePayload) == 1 && activePayload[0].ID == "q2"
+		return len(in.Questions) == 2 && in.Questions[0].ID == "q1" && in.Questions[1].ID == "q2"
 	})).Return(activities.JudgeAnswerResult{Judgments: judgments}, nil).Once()
 	env.OnActivity(activities.ActivitySucceedEvaluation, mock.Anything, mock.MatchedBy(func(in activities.SucceedEvaluationInput) bool {
 		return in.EvaluationID == "evaluation-1" &&
-			in.Score.SatisfiedPoints == 4 &&
-			in.Score.TotalPossiblePoints == 4 &&
-			len(in.Score.FailedQuestionIDs) == 0
+			in.Score.SatisfiedPoints == 1 &&
+			in.Score.TotalPossiblePoints == 2 &&
+			len(in.Score.FailedQuestionIDs) == 1 &&
+			in.Score.FailedQuestionIDs[0] == "q2"
 	})).Return(nil).Once()
 
 	env.ExecuteWorkflow(EvaluateAnswerWorkflow, input)

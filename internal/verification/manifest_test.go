@@ -39,6 +39,7 @@ func TestP06CIContract(t *testing.T) {
 	runnerInstaller, err := os.ReadFile(filepath.Join(root, "scripts", "install-live-ci-runner.sh"))
 	require.NoError(t, err)
 	require.Contains(t, string(runnerInstaller), "ExecStart=/usr/bin/sg docker")
+	require.Contains(t, string(runnerInstaller), "KillMode=control-group")
 
 	assertCIJob := func(t *testing.T, steps []struct {
 		Uses            string            `yaml:"uses"`

@@ -69,7 +69,7 @@ printf '%s\n' \
   "ExecStart=/usr/bin/sg docker -c ${RUNNER_ROOT}/run.sh" \
   'Restart=always' \
   'RestartSec=5' \
-  'KillMode=process' \
+  'KillMode=control-group' \
   '' \
   '[Install]' \
   'WantedBy=default.target' >"$UNIT_PATH"

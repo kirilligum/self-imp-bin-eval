@@ -65,8 +65,8 @@ mkdir -p debug/live-curl
 Create a checklist from a committed fixture:
 
 ```fish
-# Extract the fields accepted by POST /checklists from the fixture task.
-jq -c '{task, context}' fixtures/smoke/cases/release_notes/task.json > debug/live-curl/create_checklist_payload.json
+# Extract the task fields and explicitly select three independent evaluation runs.
+jq -c '{task, context, evaluation_runs:3}' fixtures/smoke/cases/release_notes/task.json > debug/live-curl/create_checklist_payload.json
 
 # Start checklist generation. The API returns 202 with a checklist_id because
 # question generation runs asynchronously in Temporal.
@@ -83,7 +83,7 @@ printf 'checklist_id=%s\n' "$checklist_id"
 Poll the checklist until dimensions, candidate questions, diagnostic weights, and final questions are ready:
 
 ```fish
-for attempt in (seq 1 150)
+for attempt in (seq 1 600)
   # Poll the checklist state. It starts as running and finishes as succeeded or failed.
   curl -fsS "$BIN_EVAL_URL/checklists/$checklist_id" \
     -o debug/live-curl/checklist.json
@@ -95,6 +95,7 @@ for attempt in (seq 1 150)
     # questions is the final binary checklist used for evaluation scoring.
     jq '{
       status,
+      evaluation_runs,
       dimension_count: (.dimensions | length),
       candidate_question_count: (.candidate_questions | length),
       final_question_count: (.questions | length),
@@ -137,14 +138,15 @@ printf 'evaluation_id=%s\n' "$evaluation_id"
 Poll the evaluation until score fields are ready:
 
 ```fish
-for attempt in (seq 1 150)
+for attempt in (seq 1 600)
   # Poll the evaluation state until the worker has scored the answer.
   curl -fsS "$BIN_EVAL_URL/evaluations/$evaluation_id" \
     -o debug/live-curl/evaluation.json
 
   set evaluation_state (jq -r '.status' debug/live-curl/evaluation.json)
   if test "$evaluation_state" = succeeded
-    # These fields are the final binary-checklist score and supporting judgments.
+    # Each judgment has one majority answer and a runs array containing every
+    # independently generated answer and its evidence.
     jq '{
       status,
       satisfied_points,
@@ -181,11 +183,13 @@ It writes:
 - `debug/live-curl/create_evaluation.json`
 - `debug/live-curl/evaluation.json`
 - `debug/live-curl/summary.json`
+- `debug/live-curl/llm-artifacts/manifest.json`
+- exact LLM request and response files under `debug/live-curl/llm-artifacts/objects/`
 
-The summary includes `checklist_id`, `evaluation_id`, `dimension_count`, `candidate_question_count`, `final_question_count`, diagnostic `weights`, `satisfied_points`, `total_possible_points`, `checklist_pass_rate`, `failed_question_ids`, and `judgment_count`.
+The summary includes `checklist_id`, `evaluation_id`, `dimension_count`, `candidate_question_count`, `final_question_count`, `evaluation_runs`, diagnostic `weights`, `satisfied_points`, `total_possible_points`, `checklist_pass_rate`, `failed_question_ids`, `judgment_count`, per-run pass rates, the artifact count, and the artifact manifest path. The manifest records the Garage key, byte count, and SHA-256 digest for every captured request and response without storing authorization headers.
 
 ## Existing Smoke Path
 
-`make test-e2e` remains the canonical end-to-end regression command for transient local processes. It starts the local Compose dependencies, starts short-lived API and worker binaries, creates one checklist per fixture case, evaluates good and bad answers, polls the same four async routes, and writes captured JSON to `debug/smoke/`.
+`make test-e2e` remains the canonical end-to-end regression command for transient local processes. It starts the local Compose dependencies, starts short-lived API and worker binaries, creates one checklist per fixture case, evaluates good and bad answers, polls the same four async routes, and writes captured JSON plus the exact LLM artifact export to `debug/smoke/`.
 
 Use `make test-live-curl` when validating the persistent local service. Use `make test-e2e` when validating the full smoke behavior without installing systemd units.

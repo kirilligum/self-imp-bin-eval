@@ -3,10 +3,12 @@ package db
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"time"
 
@@ -14,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kirilligum/self-imp-bin-eval/internal/evalcore"
+	"github.com/kirilligum/self-imp-bin-eval/internal/failure"
 )
 
 const (
@@ -34,9 +37,10 @@ type Store struct {
 type Checklist struct {
 	ID                 string
 	Status             string
+	EvaluationRuns     int
 	TaskArtifactKey    string
 	ContextArtifactKey string
-	ErrorMessage       *string
+	Failure            *failure.Record
 	CreatedAt          time.Time
 	CompletedAt        *time.Time
 	Dimensions         []evalcore.Dimension
@@ -54,10 +58,11 @@ type Evaluation struct {
 	TotalPossiblePoints *int
 	ChecklistPassRate   *float64
 	FailedQuestionIDs   []string
-	ErrorMessage        *string
+	Failure             *failure.Record
 	CreatedAt           time.Time
 	CompletedAt         *time.Time
-	Judgments           []evalcore.Judgment
+	RunJudgments        []evalcore.RunJudgment
+	Judgments           []evalcore.AggregatedJudgment
 }
 
 func NewStore(pool *pgxpool.Pool) *Store {
@@ -144,40 +149,51 @@ func migrationFiles(dir string) ([]string, error) {
 	return nil, fmt.Errorf("no migration files found under %q", dir)
 }
 
-func (s *Store) CreateChecklist(ctx context.Context, taskArtifactKey, contextArtifactKey string) (string, error) {
+func (s *Store) CreateChecklist(ctx context.Context, taskArtifactKey, contextArtifactKey string, evaluationRuns int) (string, error) {
+	if err := evalcore.ValidateEvaluationRuns(evaluationRuns, evaluationRuns); err != nil {
+		return "", err
+	}
 	var id string
 	err := s.pool.QueryRow(ctx, `
-		insert into checklists (status, task_artifact_key, context_artifact_key)
-		values ($1, $2, $3)
-		returning id::text`, StatusRunning, taskArtifactKey, contextArtifactKey).Scan(&id)
+		insert into checklists (status, evaluation_runs, task_artifact_key, context_artifact_key)
+		values ($1, $2, $3, $4)
+		returning id::text`, StatusRunning, evaluationRuns, taskArtifactKey, contextArtifactKey).Scan(&id)
 	return id, err
 }
 
-func (s *Store) CreateChecklistForWorkflow(ctx context.Context) (string, error) {
+func (s *Store) CreateChecklistForWorkflow(ctx context.Context, evaluationRuns int) (string, error) {
+	if err := evalcore.ValidateEvaluationRuns(evaluationRuns, evaluationRuns); err != nil {
+		return "", err
+	}
 	var id string
 	err := s.pool.QueryRow(ctx, `
 		with generated as (select gen_random_uuid() as id)
-		insert into checklists (id, status, task_artifact_key, context_artifact_key)
+		insert into checklists (id, status, evaluation_runs, task_artifact_key, context_artifact_key)
 		select id,
 		       $1,
+		       $2,
 		       'checklists/' || id::text || '/inputs/task.txt',
 		       'checklists/' || id::text || '/inputs/context.txt'
 		from generated
-		returning id::text`, StatusRunning).Scan(&id)
+		returning id::text`, StatusRunning, evaluationRuns).Scan(&id)
 	return id, err
 }
 
-func (s *Store) SucceedChecklist(ctx context.Context, checklistID string, dimensions []evalcore.Dimension, candidates []evalcore.CandidateQuestion, weights []evalcore.Weight, questions []evalcore.FinalQuestion) error {
-	if err := evalcore.ValidateDimensions(dimensions, evalcore.DefaultChecklistLimits()); err != nil {
+func (s *Store) SucceedChecklist(ctx context.Context, checklistID string, dimensions []evalcore.Dimension, candidates []evalcore.CandidateQuestion, weights []evalcore.Weight, questions []evalcore.FinalQuestion, limits evalcore.ChecklistLimits) error {
+	limits = limits.WithDefaults()
+	if err := limits.Validate(); err != nil {
 		return err
 	}
-	if err := evalcore.ValidateCandidateQuestions(dimensions, candidates, evalcore.DefaultChecklistLimits()); err != nil {
+	if err := evalcore.ValidateDimensions(dimensions, limits); err != nil {
 		return err
 	}
-	if err := evalcore.ValidateWeights(candidates, weights, evalcore.DefaultChecklistLimits()); err != nil {
+	if err := evalcore.ValidateCandidateQuestions(dimensions, candidates, limits); err != nil {
 		return err
 	}
-	if err := evalcore.ValidateFinalQuestions(dimensions, candidates, questions, evalcore.DefaultChecklistLimits()); err != nil {
+	if err := evalcore.ValidateWeights(candidates, weights, limits); err != nil {
+		return err
+	}
+	if err := evalcore.ValidateFinalQuestions(dimensions, candidates, questions, limits); err != nil {
 		return err
 	}
 	tx, err := s.pool.Begin(ctx)
@@ -185,6 +201,16 @@ func (s *Store) SucceedChecklist(ctx context.Context, checklistID string, dimens
 		return err
 	}
 	defer tx.Rollback(ctx)
+	status, err := lockStatus(ctx, tx, `select status from checklists where id = $1 for update`, checklistID)
+	if err != nil {
+		return err
+	}
+	if status != StatusRunning {
+		if err := tx.Rollback(ctx); err != nil {
+			return err
+		}
+		return s.compareSucceededChecklist(ctx, checklistID, dimensions, candidates, weights, questions)
+	}
 
 	for _, dimension := range dimensions {
 		if _, err := tx.Exec(ctx, `
@@ -220,7 +246,7 @@ func (s *Store) SucceedChecklist(ctx context.Context, checklistID string, dimens
 	}
 	tag, err := tx.Exec(ctx, `
 		update checklists
-		set status = $2, completed_at = now(), error_message = null
+		set status = $2, completed_at = now()
 		where id = $1 and status = $3`, checklistID, StatusSucceeded, StatusRunning)
 	if err != nil {
 		return mapTerminalTriggerError(err)
@@ -231,39 +257,62 @@ func (s *Store) SucceedChecklist(ctx context.Context, checklistID string, dimens
 	return tx.Commit(ctx)
 }
 
-func (s *Store) FailChecklist(ctx context.Context, checklistID, message string) error {
-	tag, err := s.pool.Exec(ctx, `
+func (s *Store) FailChecklist(ctx context.Context, checklistID string, details failure.Details) error {
+	if err := details.Validate(); err != nil {
+		return err
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	status, err := lockStatus(ctx, tx, `select status from checklists where id = $1 for update`, checklistID)
+	if err != nil {
+		return err
+	}
+	if status != StatusRunning {
+		if err := tx.Rollback(ctx); err != nil {
+			return err
+		}
+		return s.compareFailedChecklist(ctx, checklistID, details)
+	}
+	if _, err := insertWorkflowFailure(ctx, tx, &checklistID, nil, details); err != nil {
+		return err
+	}
+	tag, err := tx.Exec(ctx, `
 		update checklists
-		set status = $2, error_message = $3, completed_at = now()
-		where id = $1 and status = $4`, checklistID, StatusFailed, message, StatusRunning)
+		set status = $2, completed_at = now()
+		where id = $1 and status = $3`, checklistID, StatusFailed, StatusRunning)
 	if err != nil {
 		return mapTerminalTriggerError(err)
 	}
 	if tag.RowsAffected() != 1 {
 		return ErrConflict
 	}
-	return nil
+	return tx.Commit(ctx)
 }
 
 func (s *Store) GetChecklist(ctx context.Context, checklistID string) (Checklist, error) {
 	var checklist Checklist
-	var errorMessage sql.NullString
 	var completedAt sql.NullTime
 	err := s.pool.QueryRow(ctx, `
-		select id::text, status, task_artifact_key, context_artifact_key, error_message, created_at, completed_at
+		select id::text, status, evaluation_runs, task_artifact_key, context_artifact_key, created_at, completed_at
 		from checklists where id = $1`, checklistID).
-		Scan(&checklist.ID, &checklist.Status, &checklist.TaskArtifactKey, &checklist.ContextArtifactKey, &errorMessage, &checklist.CreatedAt, &completedAt)
+		Scan(&checklist.ID, &checklist.Status, &checklist.EvaluationRuns, &checklist.TaskArtifactKey, &checklist.ContextArtifactKey, &checklist.CreatedAt, &completedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Checklist{}, ErrNotFound
 	}
 	if err != nil {
 		return Checklist{}, err
 	}
-	if errorMessage.Valid {
-		checklist.ErrorMessage = &errorMessage.String
-	}
 	if completedAt.Valid {
 		checklist.CompletedAt = &completedAt.Time
+	}
+	if checklist.Status == StatusFailed {
+		checklist.Failure, err = s.getWorkflowFailure(ctx, &checklistID, nil)
+		if err != nil {
+			return Checklist{}, err
+		}
 	}
 
 	dimensionRows, err := s.pool.Query(ctx, `
@@ -363,19 +412,16 @@ func (s *Store) CreateEvaluationForWorkflow(ctx context.Context, checklistID str
 	return id, err
 }
 
-func (s *Store) SucceedEvaluation(ctx context.Context, evaluationID, checklistID string, judgments []evalcore.Judgment, score evalcore.ScoreResult) error {
+func (s *Store) SucceedEvaluation(ctx context.Context, evaluationID, checklistID string, runJudgments []evalcore.RunJudgment, score evalcore.ScoreResult) error {
 	checklist, err := s.GetChecklist(ctx, checklistID)
 	if err != nil {
 		return err
 	}
-	if err := evalcore.ValidateJudgments(checklist.Questions, judgments); err != nil {
-		return err
-	}
-	computedScore, err := evalcore.ScoreChecklist(checklist.Questions, judgments)
+	aggregated, err := evalcore.AggregateJudgments(checklist.Questions, runJudgments, checklist.EvaluationRuns)
 	if err != nil {
 		return err
 	}
-	if !scoreResultsEqual(score, computedScore) {
+	if !scoreResultsEqual(score, aggregated.Score) {
 		return &evalcore.SemanticError{
 			Code:    evalcore.CodeInvalidJudgments,
 			Message: fmt.Sprintf("score does not match judgments for evaluation %s", evaluationID),
@@ -386,12 +432,22 @@ func (s *Store) SucceedEvaluation(ctx context.Context, evaluationID, checklistID
 		return err
 	}
 	defer tx.Rollback(ctx)
+	status, err := lockStatus(ctx, tx, `select status from evaluations where id = $1 and checklist_id = $2 for update`, evaluationID, checklistID)
+	if err != nil {
+		return err
+	}
+	if status != StatusRunning {
+		if err := tx.Rollback(ctx); err != nil {
+			return err
+		}
+		return s.compareSucceededEvaluation(ctx, evaluationID, checklistID, runJudgments, score)
+	}
 
-	for _, judgment := range judgments {
+	for _, judgment := range runJudgments {
 		if _, err := tx.Exec(ctx, `
-			insert into judgments (evaluation_id, checklist_id, question_id, evidence, answer)
-			values ($1, $2, $3, $4, $5)`,
-			evaluationID, checklistID, judgment.QuestionID, judgment.Evidence, judgment.Answer); err != nil {
+			insert into judgments (evaluation_id, run_index, checklist_id, question_id, evidence, answer)
+			values ($1, $2, $3, $4, $5, $6)`,
+			evaluationID, judgment.RunIndex, checklistID, judgment.QuestionID, judgment.Evidence, judgment.Answer); err != nil {
 			return err
 		}
 	}
@@ -401,7 +457,6 @@ func (s *Store) SucceedEvaluation(ctx context.Context, evaluationID, checklistID
 		    satisfied_points = $4,
 		    total_possible_points = $5,
 		    checklist_pass_rate = $6,
-		    error_message = null,
 		    completed_at = now()
 		where id = $1 and checklist_id = $2 and status = $7`,
 		evaluationID, checklistID, StatusSucceeded, score.SatisfiedPoints, score.TotalPossiblePoints, score.ChecklistPassRate, StatusRunning)
@@ -414,24 +469,44 @@ func (s *Store) SucceedEvaluation(ctx context.Context, evaluationID, checklistID
 	return tx.Commit(ctx)
 }
 
-func (s *Store) FailEvaluation(ctx context.Context, evaluationID, checklistID, message string) error {
-	tag, err := s.pool.Exec(ctx, `
+func (s *Store) FailEvaluation(ctx context.Context, evaluationID, checklistID string, details failure.Details) error {
+	if err := details.Validate(); err != nil {
+		return err
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	status, err := lockStatus(ctx, tx, `select status from evaluations where id = $1 and checklist_id = $2 for update`, evaluationID, checklistID)
+	if err != nil {
+		return err
+	}
+	if status != StatusRunning {
+		if err := tx.Rollback(ctx); err != nil {
+			return err
+		}
+		return s.compareFailedEvaluation(ctx, evaluationID, checklistID, details)
+	}
+	if _, err := insertWorkflowFailure(ctx, tx, nil, &evaluationID, details); err != nil {
+		return err
+	}
+	tag, err := tx.Exec(ctx, `
 		update evaluations
-		set status = $3, error_message = $4, completed_at = now()
-		where id = $1 and checklist_id = $2 and status = $5`,
-		evaluationID, checklistID, StatusFailed, message, StatusRunning)
+		set status = $3, completed_at = now()
+		where id = $1 and checklist_id = $2 and status = $4`,
+		evaluationID, checklistID, StatusFailed, StatusRunning)
 	if err != nil {
 		return mapTerminalTriggerError(err)
 	}
 	if tag.RowsAffected() != 1 {
 		return ErrConflict
 	}
-	return nil
+	return tx.Commit(ctx)
 }
 
 func (s *Store) GetEvaluation(ctx context.Context, evaluationID string) (Evaluation, error) {
 	var evaluation Evaluation
-	var errorMessage sql.NullString
 	var completedAt sql.NullTime
 	var satisfied sql.NullInt64
 	var total sql.NullInt64
@@ -439,10 +514,10 @@ func (s *Store) GetEvaluation(ctx context.Context, evaluationID string) (Evaluat
 	err := s.pool.QueryRow(ctx, `
 		select id::text, checklist_id::text, status, answer_artifact_key,
 		       satisfied_points, total_possible_points, checklist_pass_rate,
-		       error_message, created_at, completed_at
+		       created_at, completed_at
 		from evaluations where id = $1`, evaluationID).
 		Scan(&evaluation.ID, &evaluation.ChecklistID, &evaluation.Status, &evaluation.AnswerArtifactKey,
-			&satisfied, &total, &rate, &errorMessage, &evaluation.CreatedAt, &completedAt)
+			&satisfied, &total, &rate, &evaluation.CreatedAt, &completedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Evaluation{}, ErrNotFound
 	}
@@ -460,28 +535,31 @@ func (s *Store) GetEvaluation(ctx context.Context, evaluationID string) (Evaluat
 	if rate.Valid {
 		evaluation.ChecklistPassRate = &rate.Float64
 	}
-	if errorMessage.Valid {
-		evaluation.ErrorMessage = &errorMessage.String
-	}
 	if completedAt.Valid {
 		evaluation.CompletedAt = &completedAt.Time
 	}
+	if evaluation.Status == StatusFailed {
+		evaluation.Failure, err = s.getWorkflowFailure(ctx, nil, &evaluationID)
+		if err != nil {
+			return Evaluation{}, err
+		}
+	}
 
 	rows, err := s.pool.Query(ctx, `
-		select question_id, evidence, answer
+		select run_index, question_id, evidence, answer
 		from judgments
 		where evaluation_id = $1
-		order by question_id`, evaluationID)
+		order by run_index, question_id`, evaluationID)
 	if err != nil {
 		return Evaluation{}, err
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var judgment evalcore.Judgment
-		if err := rows.Scan(&judgment.QuestionID, &judgment.Evidence, &judgment.Answer); err != nil {
+		var judgment evalcore.RunJudgment
+		if err := rows.Scan(&judgment.RunIndex, &judgment.QuestionID, &judgment.Evidence, &judgment.Answer); err != nil {
 			return Evaluation{}, err
 		}
-		evaluation.Judgments = append(evaluation.Judgments, judgment)
+		evaluation.RunJudgments = append(evaluation.RunJudgments, judgment)
 	}
 	if err := rows.Err(); err != nil {
 		return Evaluation{}, err
@@ -494,13 +572,163 @@ func (s *Store) GetEvaluation(ctx context.Context, evaluationID string) (Evaluat
 		if err != nil {
 			return Evaluation{}, err
 		}
-		score, err := evalcore.ScoreChecklist(checklist.Questions, evaluation.Judgments)
+		aggregated, err := evalcore.AggregateJudgments(checklist.Questions, evaluation.RunJudgments, checklist.EvaluationRuns)
 		if err != nil {
 			return Evaluation{}, err
 		}
-		evaluation.FailedQuestionIDs = score.FailedQuestionIDs
+		evaluation.Judgments = aggregated.Judgments
+		evaluation.FailedQuestionIDs = aggregated.Score.FailedQuestionIDs
 	}
 	return evaluation, nil
+}
+
+func insertWorkflowFailure(ctx context.Context, tx pgx.Tx, checklistID, evaluationID *string, details failure.Details) (failure.Record, error) {
+	diagnosticValues := details.Diagnostics
+	if diagnosticValues == nil {
+		diagnosticValues = []evalcore.LimitDiagnostic{}
+	}
+	artifactReferenceValues := details.ArtifactReferences
+	if artifactReferenceValues == nil {
+		artifactReferenceValues = []string{}
+	}
+	diagnostics, err := json.Marshal(diagnosticValues)
+	if err != nil {
+		return failure.Record{}, err
+	}
+	artifactReferences, err := json.Marshal(artifactReferenceValues)
+	if err != nil {
+		return failure.Record{}, err
+	}
+	record := failure.Record{ChecklistID: checklistID, EvaluationID: evaluationID, Details: details}
+	err = tx.QueryRow(ctx, `
+		insert into workflow_failures (
+			checklist_id, evaluation_id, workflow_id, stage, error_class, error_code,
+			message, retryable, attempt_count, diagnostics, artifact_references
+		) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		returning id::text, created_at`,
+		checklistID, evaluationID, details.WorkflowID, details.Stage, details.ErrorClass, details.ErrorCode,
+		details.Message, details.Retryable, details.AttemptCount, diagnostics, artifactReferences,
+	).Scan(&record.ID, &record.CreatedAt)
+	return record, err
+}
+
+func (s *Store) getWorkflowFailure(ctx context.Context, checklistID, evaluationID *string) (*failure.Record, error) {
+	var record failure.Record
+	var checklist sql.NullString
+	var evaluation sql.NullString
+	var diagnostics []byte
+	var artifactReferences []byte
+	err := s.pool.QueryRow(ctx, `
+		select id::text, checklist_id::text, evaluation_id::text, workflow_id, stage,
+		       error_class, error_code, message, retryable, attempt_count,
+		       diagnostics, artifact_references, created_at
+		from workflow_failures
+		where ($1::uuid is not null and checklist_id = $1::uuid)
+		   or ($2::uuid is not null and evaluation_id = $2::uuid)`, checklistID, evaluationID).
+		Scan(&record.ID, &checklist, &evaluation, &record.WorkflowID, &record.Stage,
+			&record.ErrorClass, &record.ErrorCode, &record.Message, &record.Retryable, &record.AttemptCount,
+			&diagnostics, &artifactReferences, &record.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	if checklist.Valid {
+		record.ChecklistID = &checklist.String
+	}
+	if evaluation.Valid {
+		record.EvaluationID = &evaluation.String
+	}
+	if err := json.Unmarshal(diagnostics, &record.Diagnostics); err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(artifactReferences, &record.ArtifactReferences); err != nil {
+		return nil, err
+	}
+	return &record, nil
+}
+
+func lockStatus(ctx context.Context, tx pgx.Tx, query string, args ...any) (string, error) {
+	var status string
+	err := tx.QueryRow(ctx, query, args...).Scan(&status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	return status, err
+}
+
+func (s *Store) compareSucceededChecklist(ctx context.Context, checklistID string, dimensions []evalcore.Dimension, candidates []evalcore.CandidateQuestion, weights []evalcore.Weight, questions []evalcore.FinalQuestion) error {
+	existing, err := s.GetChecklist(ctx, checklistID)
+	if err != nil {
+		return err
+	}
+	if existing.Status == StatusSucceeded &&
+		slices.Equal(existing.Dimensions, dimensions) &&
+		slices.Equal(existing.CandidateQuestions, candidates) &&
+		slices.Equal(existing.Weights, weights) &&
+		slices.Equal(existing.Questions, questions) {
+		return nil
+	}
+	return ErrConflict
+}
+
+func (s *Store) compareFailedChecklist(ctx context.Context, checklistID string, details failure.Details) error {
+	existing, err := s.GetChecklist(ctx, checklistID)
+	if err != nil {
+		return err
+	}
+	if existing.Status == StatusFailed && existing.Failure != nil && existing.Failure.Details.Equal(details) {
+		return nil
+	}
+	return ErrConflict
+}
+
+func (s *Store) compareSucceededEvaluation(ctx context.Context, evaluationID, checklistID string, runJudgments []evalcore.RunJudgment, score evalcore.ScoreResult) error {
+	existing, err := s.GetEvaluation(ctx, evaluationID)
+	if err != nil {
+		return err
+	}
+	if existing.ChecklistID == checklistID && existing.Status == StatusSucceeded &&
+		runJudgmentsEqual(existing.RunJudgments, runJudgments) &&
+		existing.SatisfiedPoints != nil && *existing.SatisfiedPoints == score.SatisfiedPoints &&
+		existing.TotalPossiblePoints != nil && *existing.TotalPossiblePoints == score.TotalPossiblePoints &&
+		existing.ChecklistPassRate != nil && *existing.ChecklistPassRate == score.ChecklistPassRate &&
+		slices.Equal(existing.FailedQuestionIDs, score.FailedQuestionIDs) {
+		return nil
+	}
+	return ErrConflict
+}
+
+func runJudgmentsEqual(a, b []evalcore.RunJudgment) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	type key struct {
+		runIndex   int
+		questionID string
+	}
+	indexed := make(map[key]evalcore.RunJudgment, len(a))
+	for _, judgment := range a {
+		indexed[key{runIndex: judgment.RunIndex, questionID: judgment.QuestionID}] = judgment
+	}
+	for _, judgment := range b {
+		if indexed[key{runIndex: judgment.RunIndex, questionID: judgment.QuestionID}] != judgment {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *Store) compareFailedEvaluation(ctx context.Context, evaluationID, checklistID string, details failure.Details) error {
+	existing, err := s.GetEvaluation(ctx, evaluationID)
+	if err != nil {
+		return err
+	}
+	if existing.ChecklistID == checklistID && existing.Status == StatusFailed && existing.Failure != nil && existing.Failure.Details.Equal(details) {
+		return nil
+	}
+	return ErrConflict
 }
 
 func mapTerminalTriggerError(err error) error {

@@ -137,6 +137,12 @@ func ValidateCandidateQuestions(dimensions []Dimension, candidates []CandidateQu
 
 func ValidateWeights(candidates []CandidateQuestion, weights []Weight, limits ChecklistLimits) error {
 	limits = limits.WithDefaults()
+	if limits.MaxSplitCount > DefaultMaxSplitCount {
+		return semanticError(CodeInvalidWeights, "max_split_count cannot exceed %d", DefaultMaxSplitCount)
+	}
+	if err := ValidateWeightShape(weights); err != nil {
+		return err
+	}
 	candidateByID := make(map[string]CandidateQuestion, len(candidates))
 	for _, candidate := range candidates {
 		if candidate.ID == "" {
@@ -147,21 +153,12 @@ func ValidateWeights(candidates []CandidateQuestion, weights []Weight, limits Ch
 		}
 		candidateByID[candidate.ID] = candidate
 	}
-	weightByID := make(map[string]Weight)
+	weightByID := make(map[string]Weight, len(weights))
 	for _, weight := range weights {
-		if strings.TrimSpace(weight.CandidateQuestionID) == "" {
-			return semanticError(CodeInvalidWeights, "weight has blank candidate_question_id")
-		}
 		if _, exists := candidateByID[weight.CandidateQuestionID]; !exists {
 			return semanticError(CodeInvalidWeights, "weight references unknown candidate question id %q", weight.CandidateQuestionID)
 		}
-		if _, duplicate := weightByID[weight.CandidateQuestionID]; duplicate {
-			return semanticError(CodeInvalidWeights, "duplicate weight for candidate question id %q", weight.CandidateQuestionID)
-		}
-		if strings.TrimSpace(weight.Rationale) == "" {
-			return semanticError(CodeInvalidWeights, "weight for candidate question id %q has blank rationale", weight.CandidateQuestionID)
-		}
-		if weight.Weight < 0 || weight.Weight > limits.MaxSplitCount {
+		if weight.Weight > limits.MaxSplitCount {
 			return semanticError(CodeInvalidWeights, "weight for candidate question id %q is outside 0..%d", weight.CandidateQuestionID, limits.MaxSplitCount)
 		}
 		weightByID[weight.CandidateQuestionID] = weight
@@ -172,6 +169,49 @@ func ValidateWeights(candidates []CandidateQuestion, weights []Weight, limits Ch
 		}
 	}
 	return nil
+}
+
+func ValidateWeightShape(weights []Weight) error {
+	if len(weights) == 0 {
+		return semanticError(CodeInvalidWeights, "weight assignment returned no weights")
+	}
+	seen := make(map[string]struct{}, len(weights))
+	for _, weight := range weights {
+		if strings.TrimSpace(weight.CandidateQuestionID) == "" {
+			return semanticError(CodeInvalidWeights, "weight has blank candidate_question_id")
+		}
+		if _, duplicate := seen[weight.CandidateQuestionID]; duplicate {
+			return semanticError(CodeInvalidWeights, "duplicate weight for candidate question id %q", weight.CandidateQuestionID)
+		}
+		seen[weight.CandidateQuestionID] = struct{}{}
+		if strings.TrimSpace(weight.Rationale) == "" {
+			return semanticError(CodeInvalidWeights, "weight for candidate question id %q has blank rationale", weight.CandidateQuestionID)
+		}
+		if weight.Weight < 0 || weight.Weight > DefaultMaxSplitCount {
+			return semanticError(CodeInvalidWeights, "weight for candidate question id %q is outside 0..%d", weight.CandidateQuestionID, DefaultMaxSplitCount)
+		}
+	}
+	return nil
+}
+
+func ValidateProjectedFinalQuestionCount(checklistID string, weights []Weight, limits ChecklistLimits) (int, error) {
+	limits = limits.WithDefaults()
+	projected := 0
+	for _, weight := range weights {
+		if weight.Weight > 0 {
+			projected += weight.Weight
+		}
+	}
+	if projected > limits.MaxFinalQuestions {
+		return projected, limitError(CodeInvalidFinalChecklist, LimitDiagnostic{
+			LimitName:       "max_final_questions",
+			ConfiguredLimit: limits.MaxFinalQuestions,
+			ObservedCount:   projected,
+			ChecklistID:     checklistID,
+			Stage:           "weight_assignment",
+		})
+	}
+	return projected, nil
 }
 
 func ValidateFinalQuestions(dimensions []Dimension, candidates []CandidateQuestion, questions []FinalQuestion, limits ChecklistLimits) error {
@@ -254,6 +294,9 @@ func ValidateSplitQuestions(split SplitQuestions, expectedCount int) error {
 }
 
 func ValidateJudgments(questions []FinalQuestion, judgments []Judgment) error {
+	if err := ValidateJudgmentShape(judgments); err != nil {
+		return err
+	}
 	questionByID := make(map[string]FinalQuestion, len(questions))
 	for _, question := range questions {
 		if strings.TrimSpace(question.ID) == "" {
@@ -267,25 +310,39 @@ func ValidateJudgments(questions []FinalQuestion, judgments []Judgment) error {
 	if len(questionByID) == 0 {
 		return semanticError(CodeInvalidFinalChecklist, "at least one final question is required")
 	}
-	judgmentByID := make(map[string]Judgment)
+	judgmentByID := make(map[string]Judgment, len(judgments))
 	for _, judgment := range judgments {
-		if _, exists := judgmentByID[judgment.QuestionID]; exists {
-			return semanticError(CodeInvalidJudgments, "duplicate judgment for question id %q", judgment.QuestionID)
-		}
 		if _, active := questionByID[judgment.QuestionID]; !active {
 			return semanticError(CodeInvalidJudgments, "judgment references unknown final question id %q", judgment.QuestionID)
-		}
-		if strings.TrimSpace(judgment.Evidence) == "" {
-			return semanticError(CodeInvalidJudgments, "judgment for question id %q has blank evidence", judgment.QuestionID)
-		}
-		if judgment.Answer != AnswerYes && judgment.Answer != AnswerNo {
-			return semanticError(CodeInvalidJudgments, "judgment for question id %q has invalid answer %q", judgment.QuestionID, judgment.Answer)
 		}
 		judgmentByID[judgment.QuestionID] = judgment
 	}
 	for _, question := range questions {
 		if _, ok := judgmentByID[question.ID]; !ok {
 			return semanticError(CodeInvalidJudgments, "missing judgment for final question id %q", question.ID)
+		}
+	}
+	return nil
+}
+
+func ValidateJudgmentShape(judgments []Judgment) error {
+	if len(judgments) == 0 {
+		return semanticError(CodeInvalidJudgments, "binary judging returned no judgments")
+	}
+	seen := make(map[string]struct{}, len(judgments))
+	for _, judgment := range judgments {
+		if strings.TrimSpace(judgment.QuestionID) == "" {
+			return semanticError(CodeInvalidJudgments, "judgment has blank question_id")
+		}
+		if _, duplicate := seen[judgment.QuestionID]; duplicate {
+			return semanticError(CodeInvalidJudgments, "duplicate judgment for question id %q", judgment.QuestionID)
+		}
+		seen[judgment.QuestionID] = struct{}{}
+		if strings.TrimSpace(judgment.Evidence) == "" {
+			return semanticError(CodeInvalidJudgments, "judgment for question id %q has blank evidence", judgment.QuestionID)
+		}
+		if judgment.Answer != AnswerYes && judgment.Answer != AnswerNo {
+			return semanticError(CodeInvalidJudgments, "judgment for question id %q has invalid answer %q", judgment.QuestionID, judgment.Answer)
 		}
 	}
 	return nil

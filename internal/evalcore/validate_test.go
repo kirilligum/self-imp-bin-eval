@@ -2,7 +2,6 @@ package evalcore
 
 import "testing"
 
-// TEST-002
 func TestValidateDimensionGeneration(t *testing.T) {
 	valid := []DraftDimension{{Name: "Correctness", Rubric: "Checks correctness.", Rationale: "Main scoring dimension."}}
 	if err := ValidateDimensionGeneration(valid, DefaultChecklistLimits()); err != nil {
@@ -24,7 +23,6 @@ func TestValidateDimensionGeneration(t *testing.T) {
 	}
 }
 
-// TEST-002
 func TestValidateDimensionsDecisionTable(t *testing.T) {
 	valid, _ := validRubricInputs()
 	second := Dimension{ID: "d2", Ordinal: 2, Name: "Evidence", Rubric: "Check evidence.", Rationale: "Support."}
@@ -54,7 +52,6 @@ func TestValidateDimensionsDecisionTable(t *testing.T) {
 	}
 }
 
-// TEST-002
 func TestValidateQuestionGeneration(t *testing.T) {
 	valid := []DraftQuestion{{Rationale: "Targets the main requirement.", Question: "Does the answer state the main requirement?"}}
 	if err := ValidateQuestionGeneration(valid, DefaultChecklistLimits()); err != nil {
@@ -75,7 +72,6 @@ func TestValidateQuestionGeneration(t *testing.T) {
 	}
 }
 
-// TEST-002
 func TestValidateCandidateQuestionsDecisionTable(t *testing.T) {
 	dimensions, candidates := validRubricInputs()
 
@@ -104,7 +100,6 @@ func TestValidateCandidateQuestionsDecisionTable(t *testing.T) {
 	}
 }
 
-// TEST-002
 func TestValidateWeights(t *testing.T) {
 	_, candidates := validRubricInputs()
 	if err := ValidateWeights(candidates, []Weight{
@@ -133,7 +128,6 @@ func TestValidateWeights(t *testing.T) {
 	}
 }
 
-// TEST-002
 func TestValidateFinalQuestionsDecisionTable(t *testing.T) {
 	dimensions, candidates := validRubricInputs()
 	valid := []FinalQuestion{
@@ -174,7 +168,6 @@ func TestValidateFinalQuestionsDecisionTable(t *testing.T) {
 	}
 }
 
-// TEST-002
 func TestValidateSplitQuestionsDecisionTable(t *testing.T) {
 	valid := SplitQuestions{CandidateQuestionID: "c1", Questions: []DraftQuestion{
 		{Rationale: "r1", Question: "Q1?"},
@@ -201,7 +194,6 @@ func TestValidateSplitQuestionsDecisionTable(t *testing.T) {
 	}
 }
 
-// TEST-002
 func TestValidateJudgments(t *testing.T) {
 	questions := []FinalQuestion{
 		{ID: "q1", Ordinal: 1, DimensionID: "d1", SourceCandidateID: "c1", Rationale: "r", Question: "Q1?"},
@@ -232,6 +224,42 @@ func TestValidateJudgments(t *testing.T) {
 			assertSemanticError(t, ValidateJudgments(questions, tc.judgments), CodeInvalidJudgments)
 		})
 	}
+}
+
+func TestP06CompositionalWeightsAndEffectiveLimits(t *testing.T) {
+	_, candidates := validRubricInputs()
+
+	t.Run("fixed split scale rejects configured values above four", func(t *testing.T) {
+		err := ValidateWeights(candidates[:1], []Weight{{CandidateQuestionID: "c1", Rationale: "invalid", Weight: 5}}, ChecklistLimits{MaxSplitCount: 8})
+		assertSemanticError(t, err, CodeInvalidWeights)
+	})
+
+	t.Run("configured candidate limit replaces the default", func(t *testing.T) {
+		drafts := make([]DraftQuestion, 10)
+		for i := range drafts {
+			drafts[i] = DraftQuestion{Rationale: "coverage", Question: "Question?"}
+		}
+		if err := ValidateQuestionGeneration(drafts, ChecklistLimits{MaxCandidatesPerDimension: 10}); err != nil {
+			t.Fatalf("ValidateQuestionGeneration() error = %v", err)
+		}
+	})
+
+	t.Run("projected final count reports the effective limit", func(t *testing.T) {
+		weights := []Weight{
+			{CandidateQuestionID: "c1", Rationale: "split", Weight: 4},
+			{CandidateQuestionID: "c2", Rationale: "split", Weight: 2},
+		}
+		count, err := ValidateProjectedFinalQuestionCount("checklist-limit", weights, ChecklistLimits{MaxFinalQuestions: 5})
+		if count != 6 {
+			t.Fatalf("projected count = %d, want 6", count)
+		}
+		assertSemanticError(t, err, CodeInvalidFinalChecklist)
+		assertSingleLimitDiagnostic(t, err, "max_final_questions")
+		semantic := err.(*SemanticError)
+		if semantic.Diagnostics[0].ChecklistID != "checklist-limit" || semantic.Diagnostics[0].Stage != "weight_assignment" {
+			t.Fatalf("diagnostic = %#v", semantic.Diagnostics[0])
+		}
+	})
 }
 
 func cloneDimensions(in []Dimension) []Dimension {

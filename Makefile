@@ -1,32 +1,30 @@
 SHELL := /usr/bin/env bash
 
-.PHONY: lint build test test-integration test-e2e install-local start-local stop-local status-local test-live-curl
+.PHONY: lint build test test-race test-integration test-e2e verify-plan verify-release install-local start-local stop-local status-local test-live-curl
 
 lint:
-	@files=$$(find . -name '*.go' -not -path './.git/*'); \
-	if [ -n "$$files" ]; then \
-		unformatted=$$(gofmt -l $$files); \
-		if [ -n "$$unformatted" ]; then echo "$$unformatted"; exit 1; fi; \
-	fi
-	scripts/validate_local_runtime_contract.sh
-	scripts/validate_docs_curl.sh
-	scripts/validate_traceability.sh
-	go vet ./...
+	go run ./internal/cmd/verifyplan --manifest docs/test-matrix.yml --groups lint
 
 build:
-	go build ./...
+	go run ./internal/cmd/verifyplan --manifest docs/test-matrix.yml --groups build
 
 test:
-	go test ./... -count=1
+	go run ./internal/cmd/verifyplan --manifest docs/test-matrix.yml --groups unit
+
+test-race:
+	go run ./internal/cmd/verifyplan --manifest docs/test-matrix.yml --groups race
 
 test-integration:
-	docker compose --env-file deploy/compose/.env.example -f deploy/compose/docker-compose.yml config >/dev/null
-	docker compose --env-file deploy/compose/.env.example -f deploy/compose/docker-compose.yml up -d postgres temporal garage
-	go test -tags integration ./internal/db ./internal/artifacts -count=1 -timeout 10m
+	go run ./internal/cmd/verifyplan --manifest docs/test-matrix.yml --groups integration
 
 test-e2e:
-	scripts/smoke_curl.sh
-	scripts/validate_smoke_invariants.sh
+	go run ./internal/cmd/verifyplan --manifest docs/test-matrix.yml --groups e2e
+
+verify-plan:
+	go run ./internal/cmd/verifyplan --manifest docs/test-matrix.yml $(if $(TEST),--test $(TEST),)
+
+verify-release:
+	go run ./internal/cmd/verifyplan --manifest docs/test-matrix.yml --groups lint,build,unit,race,integration,e2e,live,plan
 
 install-local:
 	scripts/install-local-systemd.sh
@@ -41,4 +39,4 @@ status-local:
 	scripts/status-local.sh
 
 test-live-curl:
-	scripts/live_curl_example.sh
+	go run ./internal/cmd/verifyplan --manifest docs/test-matrix.yml --groups live

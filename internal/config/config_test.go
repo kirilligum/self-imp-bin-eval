@@ -5,7 +5,6 @@ import (
 	"testing"
 )
 
-// TEST-009
 func TestConfigValidation(t *testing.T) {
 	t.Run("reports missing names without values", func(t *testing.T) {
 		t.Setenv("LITELLM_MASTER_KEY", "")
@@ -42,6 +41,9 @@ func TestConfigValidation(t *testing.T) {
 		}
 		if cfg.ChecklistLimits.MaxDimensions != 6 || cfg.ChecklistLimits.MaxCandidatesPerDimension != 8 || cfg.ChecklistLimits.MaxSplitCount != 4 || cfg.ChecklistLimits.MaxFinalQuestions != 64 {
 			t.Fatalf("ChecklistLimits = %#v", cfg.ChecklistLimits)
+		}
+		if cfg.MaxEvaluationRuns != 5 {
+			t.Fatalf("MaxEvaluationRuns = %d", cfg.MaxEvaluationRuns)
 		}
 		redacted := cfg.RedactSecrets("prefix garage-secret-value and llm-secret-value suffix")
 		if strings.Contains(redacted, "garage-secret-value") || strings.Contains(redacted, "llm-secret-value") {
@@ -100,15 +102,38 @@ func TestConfigValidation(t *testing.T) {
 		setRequiredEnv(t)
 		t.Setenv("BIN_EVAL_MAX_DIMENSIONS", "7")
 		t.Setenv("BIN_EVAL_MAX_CANDIDATES_PER_DIMENSION", "9")
-		t.Setenv("BIN_EVAL_MAX_SPLIT_COUNT", "5")
+		t.Setenv("BIN_EVAL_MAX_SPLIT_COUNT", "4")
 		t.Setenv("BIN_EVAL_MAX_FINAL_QUESTIONS", "80")
 
 		cfg, err := Load()
 		if err != nil {
 			t.Fatalf("Load() error = %v", err)
 		}
-		if cfg.ChecklistLimits.MaxDimensions != 7 || cfg.ChecklistLimits.MaxCandidatesPerDimension != 9 || cfg.ChecklistLimits.MaxSplitCount != 5 || cfg.ChecklistLimits.MaxFinalQuestions != 80 {
+		if cfg.ChecklistLimits.MaxDimensions != 7 || cfg.ChecklistLimits.MaxCandidatesPerDimension != 9 || cfg.ChecklistLimits.MaxSplitCount != 4 || cfg.ChecklistLimits.MaxFinalQuestions != 80 {
 			t.Fatalf("ChecklistLimits = %#v", cfg.ChecklistLimits)
+		}
+	})
+
+	t.Run("loads and validates evaluation run maximum", func(t *testing.T) {
+		setRequiredEnv(t)
+		t.Setenv("BIN_EVAL_MAX_EVALUATION_RUNS", "7")
+		cfg, err := Load()
+		if err != nil || cfg.MaxEvaluationRuns != 7 {
+			t.Fatalf("Load() max evaluation runs = %d, error = %v", cfg.MaxEvaluationRuns, err)
+		}
+		t.Setenv("BIN_EVAL_MAX_EVALUATION_RUNS", "nope")
+		if _, err := Load(); err == nil || !strings.Contains(err.Error(), "BIN_EVAL_MAX_EVALUATION_RUNS") {
+			t.Fatalf("invalid max evaluation runs error = %v", err)
+		}
+	})
+
+	t.Run("rejects split limit above the diagnostic scale", func(t *testing.T) {
+		setRequiredEnv(t)
+		t.Setenv("BIN_EVAL_MAX_SPLIT_COUNT", "5")
+
+		_, err := Load()
+		if err == nil || !strings.Contains(err.Error(), "max_split_count cannot exceed 4") {
+			t.Fatalf("Load() error = %v", err)
 		}
 	})
 

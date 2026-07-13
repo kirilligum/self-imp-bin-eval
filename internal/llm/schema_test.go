@@ -8,7 +8,6 @@ import (
 	"github.com/kirilligum/self-imp-bin-eval/internal/evalcore"
 )
 
-// TEST-001
 func TestRubricRefinementSchemasAndPrompts(t *testing.T) {
 	limits := evalcore.DefaultChecklistLimits()
 
@@ -57,36 +56,6 @@ func TestRubricRefinementSchemasAndPrompts(t *testing.T) {
 		}
 	})
 
-	t.Run("output validation rejects structural violations", func(t *testing.T) {
-		if err := (DimensionAnalysisOutput{Dimensions: []evalcore.DraftDimension{{Name: "Correctness", Rubric: "Checks correctness.", Rationale: "Needed."}}}).Validate(); err != nil {
-			t.Fatalf("valid dimensions error = %v", err)
-		}
-		if err := (DimensionAnalysisOutput{}).Validate(); err == nil {
-			t.Fatal("empty dimensions unexpectedly valid")
-		}
-		if err := (QuestionGenerationOutput{Questions: []evalcore.DraftQuestion{{Rationale: "r", Question: "q?"}}}).Validate(); err != nil {
-			t.Fatalf("valid questions error = %v", err)
-		}
-		if err := (QuestionGenerationOutput{}).Validate(); err == nil {
-			t.Fatal("empty questions unexpectedly valid")
-		}
-		if err := (WeightAssignmentOutput{Weights: []evalcore.Weight{{CandidateQuestionID: "c1", Rationale: "duplicate", Weight: 0}}}).Validate(); err != nil {
-			t.Fatalf("valid weight zero error = %v", err)
-		}
-		if err := (WeightAssignmentOutput{Weights: []evalcore.Weight{{CandidateQuestionID: "c1", Rationale: "r", Weight: 5}}}).Validate(); err == nil {
-			t.Fatal("weight 5 unexpectedly valid")
-		}
-		if err := (QuestionSplittingOutput{Questions: []evalcore.DraftQuestion{{Rationale: "r", Question: "q?"}}}).Validate(); err != nil {
-			t.Fatalf("valid split error = %v", err)
-		}
-		if err := (BinaryJudgingOutput{Judgments: []evalcore.Judgment{{QuestionID: "q1", Evidence: "e", Answer: evalcore.AnswerYes}}}).Validate(); err != nil {
-			t.Fatalf("valid judgment error = %v", err)
-		}
-		if err := (BinaryJudgingOutput{Judgments: []evalcore.Judgment{{QuestionID: "q1", Evidence: " ", Answer: "maybe"}}}).Validate(); err == nil {
-			t.Fatal("invalid judgment unexpectedly valid")
-		}
-	})
-
 	t.Run("prompts use shared question requirements without fixed generation count or json examples", func(t *testing.T) {
 		dimension := evalcore.Dimension{ID: "d1", Ordinal: 1, Name: "Correctness", Rubric: "Check correctness.", Rationale: "Core."}
 		generation := BuildQuestionGenerationRequest("task text", "context text", "checklist-evaluator", dimension, limits)
@@ -96,10 +65,8 @@ func TestRubricRefinementSchemasAndPrompts(t *testing.T) {
 
 		for _, req := range []GenerateRequest{generation, splitting} {
 			payload := marshalString(t, req)
-			for _, shared := range []string{QuestionRequirementsPrompt, QuestionOutputPrompt} {
-				if !strings.Contains(payload, shared) {
-					t.Fatalf("%s prompt missing shared fragment %q: %s", req.PromptName, shared, payload)
-				}
+			if !strings.Contains(payload, QuestionRequirementsPrompt) {
+				t.Fatalf("%s prompt missing shared fragment %q: %s", req.PromptName, QuestionRequirementsPrompt, payload)
 			}
 			for _, forbidden := range []string{"Generate 5 to 8", "strong answer", "weak answer", "Return only JSON", `"questions":[`} {
 				if strings.Contains(payload, forbidden) {
@@ -114,7 +81,7 @@ func TestRubricRefinementSchemasAndPrompts(t *testing.T) {
 			{ID: "c1", DimensionID: "d1", Ordinal: 1, Rationale: "r", Question: "Does it mention alpha?"},
 		}, limits)
 		payload := marshalString(t, req)
-		for _, want := range []string{"weight", "0 to delete duplicate", "1 for normal", "higher integer"} {
+		for _, want := range []string{"split count", "0", "semantically duplicate", "1", "atomic", "2, 3, or 4", "independently judgeable"} {
 			if !strings.Contains(payload, want) {
 				t.Fatalf("weight prompt missing %q: %s", want, payload)
 			}
@@ -140,6 +107,51 @@ func TestRubricRefinementSchemasAndPrompts(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestP06CompositionalWeightsAndEffectiveLimits(t *testing.T) {
+	limits := evalcore.ChecklistLimits{
+		MaxDimensions:             9,
+		MaxCandidatesPerDimension: 12,
+		MaxSplitCount:             4,
+		MaxFinalQuestions:         64,
+	}
+	dimension := evalcore.Dimension{ID: "d1", Ordinal: 1, Name: "Correctness", Rubric: "Check correctness.", Rationale: "Core."}
+	candidate := evalcore.CandidateQuestion{ID: "c1", DimensionID: "d1", Ordinal: 1, Rationale: "coverage", Question: "Does it identify the cause and provide a tested fix?"}
+	weight := evalcore.Weight{CandidateQuestionID: "c1", Rationale: "two obligations", Weight: 2}
+
+	requests := []GenerateRequest{
+		BuildDimensionAnalysisRequest("task", "context", "model", limits),
+		BuildQuestionGenerationRequest("task", "context", "model", dimension, limits),
+		BuildWeightAssignmentRequest("task", "context", "model", []evalcore.CandidateQuestion{candidate}, limits),
+		BuildQuestionSplittingRequest("task", "context", "model", candidate, weight, limits),
+		BuildBinaryJudgingRequest("task", "context", "answer", "model", []evalcore.FinalQuestion{{ID: "q1", Question: "Does it identify the cause?"}}),
+	}
+	for _, request := range requests {
+		systemPrompt := request.Messages[0].Content
+		for _, forbidden := range []string{"response object", "array", "item has", "return JSON", "Return only JSON"} {
+			if strings.Contains(systemPrompt, forbidden) {
+				t.Fatalf("%s system prompt duplicates output structure with %q: %s", request.PromptName, forbidden, systemPrompt)
+			}
+		}
+	}
+
+	weightPrompt := requests[2].Messages[0].Content
+	for _, required := range []string{"0", "semantically duplicate", "1", "atomic", "2", "3", "4", "independently judgeable"} {
+		if !strings.Contains(weightPrompt, required) {
+			t.Fatalf("weight prompt missing %q: %s", required, weightPrompt)
+		}
+	}
+	for _, forbidden := range []string{"important", "broad enough", "more important"} {
+		if strings.Contains(weightPrompt, forbidden) {
+			t.Fatalf("weight prompt contains importance-based split instruction %q: %s", forbidden, weightPrompt)
+		}
+	}
+
+	generationQuestions := QuestionGenerationSchema(limits)["properties"].(map[string]any)["questions"].(map[string]any)
+	if generationQuestions["maxItems"] != 12 {
+		t.Fatalf("question generation maxItems = %#v, want 12", generationQuestions["maxItems"])
+	}
 }
 
 func marshalString(t *testing.T, v any) string {

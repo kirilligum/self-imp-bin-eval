@@ -8,7 +8,6 @@ import (
 	"time"
 )
 
-// TEST-009
 func TestStructuredLogFields(t *testing.T) {
 	var buf bytes.Buffer
 	logger := NewLogger(&buf, LoggerOptions{

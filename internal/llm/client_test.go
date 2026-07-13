@@ -1,9 +1,11 @@
 package llm
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,8 +15,96 @@ import (
 	"github.com/kirilligum/self-imp-bin-eval/internal/evalcore"
 )
 
-// TEST-007
+func TestP06ExactLLMArtifacts(t *testing.T) {
+	t.Run("success returns byte-identical request and response bodies", func(t *testing.T) {
+		responseBody := []byte("event: response.function_call_arguments.done\n" +
+			"data: " + streamEvent(t, map[string]any{"type": "response.function_call_arguments.done", "arguments": `{"questions":[{"rationale":"r","question":"q?"}]}`}) + "\n\n" +
+			"data: [DONE]\n\n")
+		var receivedRequest []byte
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var err error
+			receivedRequest, err = io.ReadAll(r.Body)
+			if err != nil {
+				t.Fatalf("read request error = %v", err)
+			}
+			_, _ = w.Write(responseBody)
+		}))
+		defer server.Close()
+
+		client := NewHTTPClient(server.URL, "secret-not-in-trace", server.Client())
+		var out QuestionGenerationOutput
+		trace, err := client.GenerateJSON(context.Background(), testQuestionGenerationRequest("model"), &out)
+		if err != nil {
+			t.Fatalf("GenerateJSON() error = %v", err)
+		}
+		if !bytes.Equal(trace.RequestBody, receivedRequest) || !bytes.Equal(trace.ResponseBody, responseBody) {
+			t.Fatalf("trace changed transport bytes: trace=%#v", trace)
+		}
+		if strings.Contains(string(trace.RequestBody), "secret-not-in-trace") {
+			t.Fatal("trace captured authorization secret")
+		}
+	})
+
+	t.Run("invalid output and HTTP errors retain bodies without leaking them in errors", func(t *testing.T) {
+		for _, tc := range []struct {
+			name      string
+			status    int
+			body      []byte
+			wantModel bool
+		}{
+			{name: "invalid structured output", status: http.StatusOK, body: []byte("data: " + streamEvent(t, map[string]any{"type": "response.function_call_arguments.done", "arguments": "RAW_INVALID_JSON"}) + "\n\n"), wantModel: true},
+			{name: "HTTP error body", status: http.StatusServiceUnavailable, body: []byte("RAW_HTTP_ERROR_BODY")},
+			{name: "streamed provider error", status: http.StatusOK, body: []byte("data: " + streamEvent(t, map[string]any{"type": "error", "message": "RAW_STREAM_ERROR"}) + "\n\n")},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.WriteHeader(tc.status)
+					_, _ = w.Write(tc.body)
+				}))
+				defer server.Close()
+				client := NewHTTPClient(server.URL, "", server.Client())
+				var out QuestionGenerationOutput
+				trace, err := client.GenerateJSON(context.Background(), testQuestionGenerationRequest("model"), &out)
+				if err == nil {
+					t.Fatal("expected error")
+				}
+				if !bytes.Equal(trace.ResponseBody, tc.body) {
+					t.Fatalf("response trace = %q, want %q", trace.ResponseBody, tc.body)
+				}
+				if strings.Contains(err.Error(), "RAW_") {
+					t.Fatalf("error leaked raw body: %v", err)
+				}
+				if tc.wantModel && !IsModelOutputInvalid(err) {
+					t.Fatalf("error = %T, want model output error", err)
+				}
+			})
+		}
+	})
+
+	t.Run("response overflow is bounded and explicit", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte(strings.Repeat("x", 65)))
+		}))
+		defer server.Close()
+		client := NewHTTPClient(server.URL, "", server.Client())
+		client.maxResponseBytes = 64
+		var out QuestionGenerationOutput
+		trace, err := client.GenerateJSON(context.Background(), testQuestionGenerationRequest("model"), &out)
+		var sizeErr *ResponseSizeError
+		if !errors.As(err, &sizeErr) || !trace.ResponseTruncated || len(trace.ResponseBody) != 64 || trace.ResponseBytesRead != 65 {
+			t.Fatalf("overflow trace/error = %#v / %T %v", trace, err, err)
+		}
+	})
+}
+
 func TestGenerateJSONClient(t *testing.T) {
+	t.Run("default client has a bounded request timeout", func(t *testing.T) {
+		client := NewHTTPClient("http://127.0.0.1", "", nil)
+		if client.httpClient.Timeout != DefaultRequestTimeout {
+			t.Fatalf("HTTP timeout = %s, want %s", client.httpClient.Timeout, DefaultRequestTimeout)
+		}
+	})
+
 	t.Run("sends schema request and decodes valid content", func(t *testing.T) {
 		var calls atomic.Int32
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -35,13 +125,20 @@ func TestGenerateJSONClient(t *testing.T) {
 			if body["stream"] != true {
 				t.Fatalf("stream = %#v", body["stream"])
 			}
-			text, ok := body["text"].(map[string]any)
-			if !ok {
-				t.Fatalf("text format missing: %#v", body)
+			tools, ok := body["tools"].([]any)
+			if !ok || len(tools) != 1 {
+				t.Fatalf("strict function tool missing: %#v", body)
 			}
-			format, ok := text["format"].(map[string]any)
-			if !ok || format["type"] != "json_schema" {
-				t.Fatalf("text.format = %#v", text["format"])
+			tool, ok := tools[0].(map[string]any)
+			if !ok || tool["type"] != "function" || tool["name"] != "question_generation" || tool["strict"] != true || tool["parameters"] == nil {
+				t.Fatalf("tool = %#v", tools[0])
+			}
+			choice, ok := body["tool_choice"].(map[string]any)
+			if !ok || choice["type"] != "function" || choice["name"] != "question_generation" {
+				t.Fatalf("tool_choice = %#v", body["tool_choice"])
+			}
+			if _, legacy := body["text"]; legacy {
+				t.Fatalf("request contains unsupported text.format: %#v", body["text"])
 			}
 			writeResponsesContent(t, w, `{"questions":[{"rationale":"r","question":"q?"}]}`)
 		}))
@@ -49,7 +146,7 @@ func TestGenerateJSONClient(t *testing.T) {
 
 		client := NewHTTPClient(server.URL, "test-key", server.Client())
 		var out QuestionGenerationOutput
-		err := client.GenerateJSON(context.Background(), testQuestionGenerationRequest("checklist-evaluator"), &out)
+		_, err := client.GenerateJSON(context.Background(), testQuestionGenerationRequest("checklist-evaluator"), &out)
 		if err != nil {
 			t.Fatalf("GenerateJSON() error = %v", err)
 		}
@@ -69,7 +166,7 @@ func TestGenerateJSONClient(t *testing.T) {
 
 		client := NewHTTPClient(server.URL, "", server.Client())
 		var out QuestionGenerationOutput
-		err := client.GenerateJSON(context.Background(), testQuestionGenerationRequest("model"), &out)
+		_, err := client.GenerateJSON(context.Background(), testQuestionGenerationRequest("model"), &out)
 		assertModelOutputError(t, err)
 	})
 
@@ -81,7 +178,7 @@ func TestGenerateJSONClient(t *testing.T) {
 
 		client := NewHTTPClient(server.URL, "", server.Client())
 		var out QuestionGenerationOutput
-		err := client.GenerateJSON(context.Background(), testQuestionGenerationRequest("model"), &out)
+		_, err := client.GenerateJSON(context.Background(), testQuestionGenerationRequest("model"), &out)
 		assertModelOutputError(t, err)
 	})
 
@@ -93,7 +190,7 @@ func TestGenerateJSONClient(t *testing.T) {
 
 		client := NewHTTPClient(server.URL, "", server.Client())
 		var out QuestionGenerationOutput
-		err := client.GenerateJSON(context.Background(), testQuestionGenerationRequest("model"), &out)
+		_, err := client.GenerateJSON(context.Background(), testQuestionGenerationRequest("model"), &out)
 		if !IsRetryableInfraError(err) {
 			t.Fatalf("error = %T %v, want retryable infra", err, err)
 		}
@@ -121,7 +218,7 @@ func TestGenerateJSONClient(t *testing.T) {
 
 				client := NewHTTPClient(server.URL, "", server.Client())
 				var out QuestionGenerationOutput
-				err := client.GenerateJSON(context.Background(), testQuestionGenerationRequest("model"), &out)
+				_, err := client.GenerateJSON(context.Background(), testQuestionGenerationRequest("model"), &out)
 				var infra *InfraError
 				if !errors.As(err, &infra) {
 					t.Fatalf("error = %T %v, want infra", err, err)
@@ -141,7 +238,7 @@ func TestGenerateJSONClient(t *testing.T) {
 
 		client := NewHTTPClient(server.URL, "", server.Client())
 		var out QuestionGenerationOutput
-		err := client.GenerateJSON(context.Background(), testQuestionGenerationRequest("model"), &out)
+		_, err := client.GenerateJSON(context.Background(), testQuestionGenerationRequest("model"), &out)
 		assertModelOutputError(t, err)
 	})
 
@@ -156,7 +253,7 @@ func TestGenerateJSONClient(t *testing.T) {
 
 		client := NewHTTPClient(server.URL, "", server.Client())
 		var out QuestionGenerationOutput
-		if err := client.GenerateJSON(context.Background(), testQuestionGenerationRequest("model"), &out); err != nil {
+		if _, err := client.GenerateJSON(context.Background(), testQuestionGenerationRequest("model"), &out); err != nil {
 			t.Fatalf("GenerateJSON() error = %v", err)
 		}
 	})
@@ -164,7 +261,7 @@ func TestGenerateJSONClient(t *testing.T) {
 	t.Run("invalid base URL is non retryable infra", func(t *testing.T) {
 		client := NewHTTPClient("://bad-url", "", nil)
 		var out QuestionGenerationOutput
-		err := client.GenerateJSON(context.Background(), testQuestionGenerationRequest("model"), &out)
+		_, err := client.GenerateJSON(context.Background(), testQuestionGenerationRequest("model"), &out)
 		var infra *InfraError
 		if !errors.As(err, &infra) {
 			t.Fatalf("error = %T %v, want infra", err, err)
@@ -175,57 +272,74 @@ func TestGenerateJSONClient(t *testing.T) {
 	})
 }
 
-// TEST-007
-func TestReadResponsesStream(t *testing.T) {
+func TestReadStructuredResponsesStream(t *testing.T) {
 	t.Run("concatenates delta chunks and ignores non data lines", func(t *testing.T) {
-		content, err := readResponsesStream(strings.NewReader(
-			"event: response.output_text.delta\n" +
-				"data: " + streamEvent(t, map[string]any{"type": "response.output_text.delta", "delta": "hel"}) + "\n\n" +
-				": keepalive\n" +
-				"data: " + streamEvent(t, map[string]any{"type": "response.output_text.delta", "delta": "lo"}) + "\n\n" +
+		content, err := readStructuredResponsesStream(strings.NewReader(
+			"event: response.function_call_arguments.delta\n"+
+				"data: "+streamEvent(t, map[string]any{"type": "response.function_call_arguments.delta", "delta": "hel"})+"\n\n"+
+				": keepalive\n"+
+				"data: "+streamEvent(t, map[string]any{"type": "response.function_call_arguments.delta", "delta": "lo"})+"\n\n"+
 				"data: [DONE]\n\n",
-		))
+		), "question_generation")
 		if err != nil {
-			t.Fatalf("readResponsesStream() error = %v", err)
+			t.Fatalf("readStructuredResponsesStream() error = %v", err)
 		}
 		if content != "hello" {
 			t.Fatalf("content = %q", content)
 		}
 	})
 
-	t.Run("done event text wins over deltas", func(t *testing.T) {
-		content, err := readResponsesStream(strings.NewReader(
-			"data: " + streamEvent(t, map[string]any{"type": "response.output_text.delta", "delta": "partial"}) + "\n\n" +
-				"data: " + streamEvent(t, map[string]any{"type": "response.output_text.done", "text": "complete"}) + "\n\n",
-		))
+	t.Run("done event arguments win over deltas", func(t *testing.T) {
+		content, err := readStructuredResponsesStream(strings.NewReader(
+			"data: "+streamEvent(t, map[string]any{"type": "response.function_call_arguments.delta", "delta": "partial"})+"\n\n"+
+				"data: "+streamEvent(t, map[string]any{"type": "response.function_call_arguments.done", "arguments": "complete"})+"\n\n",
+		), "question_generation")
 		if err != nil {
-			t.Fatalf("readResponsesStream() error = %v", err)
+			t.Fatalf("readStructuredResponsesStream() error = %v", err)
 		}
 		if content != "complete" {
 			t.Fatalf("content = %q", content)
 		}
 	})
 
+	t.Run("accepts the forced function output item", func(t *testing.T) {
+		content, err := readStructuredResponsesStream(strings.NewReader(
+			"data: "+streamEvent(t, map[string]any{"type": "response.output_item.done", "item": map[string]any{"type": "function_call", "name": "question_generation", "arguments": "complete"}})+"\n\n",
+		), "question_generation")
+		if err != nil || content != "complete" {
+			t.Fatalf("content/error = %q / %v", content, err)
+		}
+	})
+
+	t.Run("ignores a function output for another tool", func(t *testing.T) {
+		content, err := readStructuredResponsesStream(strings.NewReader(
+			"data: "+streamEvent(t, map[string]any{"type": "response.output_item.done", "item": map[string]any{"type": "function_call", "name": "other", "arguments": "unexpected"}})+"\n\n",
+		), "question_generation")
+		if err != nil || content != "" {
+			t.Fatalf("content/error = %q / %v", content, err)
+		}
+	})
+
 	t.Run("invalid event JSON is an error", func(t *testing.T) {
-		_, err := readResponsesStream(strings.NewReader("data: {not-json\n\n"))
+		_, err := readStructuredResponsesStream(strings.NewReader("data: {not-json\n\n"), "question_generation")
 		if err == nil {
 			t.Fatal("expected stream decode error")
 		}
 	})
 
 	t.Run("failed event reports provider message", func(t *testing.T) {
-		_, err := readResponsesStream(strings.NewReader(
-			"data: " + streamEvent(t, map[string]any{"type": "response.failed", "response": map[string]any{"error": map[string]any{"message": "rate limited"}}}) + "\n\n",
-		))
+		_, err := readStructuredResponsesStream(strings.NewReader(
+			"data: "+streamEvent(t, map[string]any{"type": "response.failed", "response": map[string]any{"error": map[string]any{"message": "rate limited"}}})+"\n\n",
+		), "question_generation")
 		if err == nil || !strings.Contains(err.Error(), "rate limited") {
 			t.Fatalf("error = %v, want provider message", err)
 		}
 	})
 
 	t.Run("error event falls back to code", func(t *testing.T) {
-		_, err := readResponsesStream(strings.NewReader(
-			"data: " + streamEvent(t, map[string]any{"type": "error", "error": map[string]any{"code": "bad_request"}}) + "\n\n",
-		))
+		_, err := readStructuredResponsesStream(strings.NewReader(
+			"data: "+streamEvent(t, map[string]any{"type": "error", "error": map[string]any{"code": "bad_request"}})+"\n\n",
+		), "question_generation")
 		if err == nil || !strings.Contains(err.Error(), "bad_request") {
 			t.Fatalf("error = %v, want code", err)
 		}
@@ -236,8 +350,8 @@ func writeResponsesContent(t *testing.T, w http.ResponseWriter, content string) 
 	t.Helper()
 	w.Header().Set("Content-Type", "text/event-stream")
 	eventBytes, err := json.Marshal(map[string]any{
-		"type": "response.output_text.done",
-		"text": content,
+		"type":      "response.function_call_arguments.done",
+		"arguments": content,
 	})
 	if err != nil {
 		t.Fatalf("Encode() error = %v", err)

@@ -12,6 +12,8 @@ const (
 	DefaultMaxCandidatesPerDimension = 8
 	DefaultMaxSplitCount             = 4
 	DefaultMaxFinalQuestions         = 64
+	DefaultEvaluationRuns            = 3
+	DefaultMaxEvaluationRuns         = 5
 )
 
 type ErrorCode string
@@ -66,6 +68,14 @@ func (l ChecklistLimits) WithDefaults() ChecklistLimits {
 		l.MaxFinalQuestions = defaults.MaxFinalQuestions
 	}
 	return l
+}
+
+func (l ChecklistLimits) Validate() error {
+	l = l.WithDefaults()
+	if l.MaxSplitCount > DefaultMaxSplitCount {
+		return fmt.Errorf("max_split_count cannot exceed %d", DefaultMaxSplitCount)
+	}
+	return nil
 }
 
 type LimitDiagnostic struct {
@@ -129,11 +139,45 @@ type Judgment struct {
 	Answer     string `json:"answer"`
 }
 
+type RunJudgment struct {
+	RunIndex   int    `json:"run_index"`
+	QuestionID string `json:"question_id"`
+	Evidence   string `json:"evidence"`
+	Answer     string `json:"answer"`
+}
+
+type JudgmentRun struct {
+	RunIndex int    `json:"run_index"`
+	Evidence string `json:"evidence"`
+	Answer   string `json:"answer"`
+}
+
+type AggregatedJudgment struct {
+	QuestionID string        `json:"question_id"`
+	Runs       []JudgmentRun `json:"runs"`
+	Answer     string        `json:"answer"`
+}
+
 type ScoreResult struct {
 	SatisfiedPoints     int      `json:"satisfied_points"`
 	TotalPossiblePoints int      `json:"total_possible_points"`
 	ChecklistPassRate   float64  `json:"checklist_pass_rate"`
 	FailedQuestionIDs   []string `json:"failed_question_ids"`
+}
+
+type AggregationResult struct {
+	Judgments []AggregatedJudgment
+	Score     ScoreResult
+}
+
+func ValidateEvaluationRuns(evaluationRuns, maxEvaluationRuns int) error {
+	if maxEvaluationRuns <= 0 {
+		maxEvaluationRuns = DefaultMaxEvaluationRuns
+	}
+	if evaluationRuns <= 0 || evaluationRuns%2 == 0 || evaluationRuns > maxEvaluationRuns {
+		return fmt.Errorf("evaluation_runs must be an odd positive integer not greater than %d", maxEvaluationRuns)
+	}
+	return nil
 }
 
 func semanticError(code ErrorCode, format string, args ...any) *SemanticError {

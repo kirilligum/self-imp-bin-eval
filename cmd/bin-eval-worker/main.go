@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"log"
-	"net/http"
 
 	"github.com/kirilligum/self-imp-bin-eval/internal/activities"
 	"github.com/kirilligum/self-imp-bin-eval/internal/artifacts"
@@ -30,7 +29,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	llmClient := llm.NewHTTPClient(cfg.LLMBaseURL, cfg.LLMAPIKey, http.DefaultClient)
+	llmClient := llm.NewHTTPClient(cfg.LLMBaseURL, cfg.LLMAPIKey, nil)
 	temporalClient, err := client.Dial(client.Options{HostPort: cfg.TemporalAddress})
 	if err != nil {
 		log.Fatal(err)

@@ -7,14 +7,186 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/kirilligum/self-imp-bin-eval/internal/db"
 	"github.com/kirilligum/self-imp-bin-eval/internal/evalcore"
+	"github.com/kirilligum/self-imp-bin-eval/internal/failure"
+	"go.temporal.io/api/serviceerror"
+	workflowservice "go.temporal.io/api/workflowservice/v1"
+	"go.temporal.io/sdk/client"
 )
 
-// TEST-013
+func TestP06TemporalIdempotency(t *testing.T) {
+	t.Run("already started and ambiguous committed starts are accepted", func(t *testing.T) {
+		alreadyStarted := &fakeWorkflowClient{startErr: serviceerror.NewWorkflowExecutionAlreadyStarted("exists", "request", "run")}
+		starter := TemporalStarter{Client: alreadyStarted, TaskQueue: "queue"}
+		if err := starter.StartCreateChecklist(context.Background(), "checklist-1", "task", "context"); err != nil {
+			t.Fatalf("already-started workflow error = %v", err)
+		}
+		if alreadyStarted.describeCalls != 0 {
+			t.Fatalf("already-started describe calls = %d, want 0", alreadyStarted.describeCalls)
+		}
+
+		ambiguousCommitted := &fakeWorkflowClient{
+			startErr:         context.DeadlineExceeded,
+			describeResponse: &workflowservice.DescribeWorkflowExecutionResponse{},
+		}
+		starter.Client = ambiguousCommitted
+		if err := starter.StartEvaluateAnswer(context.Background(), "evaluation-1", "checklist-1", "answer"); err != nil {
+			t.Fatalf("committed ambiguous workflow error = %v", err)
+		}
+		if ambiguousCommitted.describedWorkflowID != "evaluation-evaluation-1" {
+			t.Fatalf("described workflow ID = %q", ambiguousCommitted.describedWorkflowID)
+		}
+	})
+
+	t.Run("not found is definitive and other describe errors remain ambiguous", func(t *testing.T) {
+		definitive := &fakeWorkflowClient{startErr: context.DeadlineExceeded, describeErr: serviceerror.NewNotFound("missing")}
+		starter := TemporalStarter{Client: definitive, TaskQueue: "queue"}
+		err := starter.StartCreateChecklist(context.Background(), "checklist-2", "task", "context")
+		if err == nil || !IsDefinitiveWorkflowStartError(err) {
+			t.Fatalf("definitive start error = %T %v", err, err)
+		}
+
+		ambiguous := &fakeWorkflowClient{startErr: context.DeadlineExceeded, describeErr: errors.New("describe unavailable")}
+		starter.Client = ambiguous
+		err = starter.StartCreateChecklist(context.Background(), "checklist-3", "task", "context")
+		if err == nil || IsDefinitiveWorkflowStartError(err) {
+			t.Fatalf("ambiguous start error = %T %v", err, err)
+		}
+	})
+
+	t.Run("API records a definitive non-start and propagates persistence failure", func(t *testing.T) {
+		store := newFakeStore()
+		starter := &fakeStarter{createErr: newDefinitiveWorkflowStartError(errors.New("RAW_START_ERROR"))}
+		router := NewRouter(Dependencies{Store: store, Starter: starter})
+		resp := request(t, router, http.MethodPost, "/checklists", `{"task":"task","context":"context"}`)
+		assertStatus(t, resp, http.StatusInternalServerError)
+		got := store.checklists["checklist-1"]
+		if got.Status != db.StatusFailed || got.Failure == nil || got.Failure.ErrorCode != "workflow_start_failed" || strings.Contains(got.Failure.Message, "RAW_START_ERROR") {
+			t.Fatalf("definitive start failure = %#v", got)
+		}
+
+		store = newFakeStore()
+		store.failChecklistErr = errors.New("failure persistence unavailable")
+		router = NewRouter(Dependencies{Store: store, Starter: starter})
+		resp = request(t, router, http.MethodPost, "/checklists", `{"task":"task","context":"context"}`)
+		assertStatus(t, resp, http.StatusInternalServerError)
+		if store.failChecklistCalls != 1 {
+			t.Fatalf("failure persistence calls = %d, want 1", store.failChecklistCalls)
+		}
+	})
+}
+
+func TestP06RepeatedEvaluation(t *testing.T) {
+	store := newFakeStore()
+	starter := &fakeStarter{}
+	router := NewRouter(Dependencies{Store: store, Starter: starter, MaxEvaluationRuns: 5})
+
+	resp := request(t, router, http.MethodPost, "/checklists", `{"task":"task","context":"context"}`)
+	assertStatus(t, resp, http.StatusAccepted)
+	if store.lastEvaluationRuns != 3 {
+		t.Fatalf("default evaluation_runs = %d, want 3", store.lastEvaluationRuns)
+	}
+	resp = request(t, router, http.MethodPost, "/checklists", `{"task":"task","context":"context","evaluation_runs":5}`)
+	assertStatus(t, resp, http.StatusAccepted)
+	if store.lastEvaluationRuns != 5 {
+		t.Fatalf("explicit evaluation_runs = %d, want 5", store.lastEvaluationRuns)
+	}
+	for _, body := range []string{
+		`{"task":"task","context":"context","evaluation_runs":0}`,
+		`{"task":"task","context":"context","evaluation_runs":2}`,
+		`{"task":"task","context":"context","evaluation_runs":7}`,
+		`{"task":"task","context":"context","evaluation_runs":-1}`,
+	} {
+		assertStatus(t, request(t, router, http.MethodPost, "/checklists", body), http.StatusBadRequest)
+	}
+
+	store.checklists["checklist-runs"] = db.Checklist{ID: "checklist-runs", Status: db.StatusSucceeded, EvaluationRuns: 3}
+	resp = request(t, router, http.MethodGet, "/checklists/checklist-runs", "")
+	assertJSONFields(t, resp, map[string]any{"evaluation_runs": float64(3)})
+
+	store.evaluations["evaluation-runs"] = db.Evaluation{
+		ID: "evaluation-runs", ChecklistID: "checklist-runs", Status: db.StatusSucceeded,
+		Judgments: []evalcore.AggregatedJudgment{{
+			QuestionID: "q1",
+			Runs:       []evalcore.JudgmentRun{{RunIndex: 1, Evidence: "yes", Answer: evalcore.AnswerYes}, {RunIndex: 2, Evidence: "yes", Answer: evalcore.AnswerYes}, {RunIndex: 3, Evidence: "no", Answer: evalcore.AnswerNo}},
+			Answer:     evalcore.AnswerYes,
+		}},
+	}
+	resp = request(t, router, http.MethodGet, "/evaluations/evaluation-runs", "")
+	var body map[string]any
+	decodeBody(t, resp, &body)
+	judgments := body["judgments"].([]any)
+	judgment := judgments[0].(map[string]any)
+	if judgment["answer"] != evalcore.AnswerYes || len(judgment["runs"].([]any)) != 3 {
+		t.Fatalf("aggregated API judgment = %#v", judgment)
+	}
+}
+
+type fakeWorkflowClient struct {
+	startErr             error
+	describeResponse     *workflowservice.DescribeWorkflowExecutionResponse
+	describeErr          error
+	describeCalls        int
+	describedWorkflowID  string
+	startWorkflowOptions client.StartWorkflowOptions
+}
+
+func (c *fakeWorkflowClient) ExecuteWorkflow(ctx context.Context, options client.StartWorkflowOptions, workflow any, args ...any) (client.WorkflowRun, error) {
+	c.startWorkflowOptions = options
+	return nil, c.startErr
+}
+
+func (c *fakeWorkflowClient) DescribeWorkflowExecution(ctx context.Context, workflowID, runID string) (*workflowservice.DescribeWorkflowExecutionResponse, error) {
+	c.describeCalls++
+	c.describedWorkflowID = workflowID
+	return c.describeResponse, c.describeErr
+}
+
+func TestP06StructuredWorkflowFailures(t *testing.T) {
+	const rawSentinel = "RAW_PROVIDER_OUTPUT_MUST_NOT_LEAK"
+	record := &failure.Record{
+		ID: "failure-1",
+		Details: failure.Details{
+			WorkflowID:         "workflow-1",
+			Stage:              "weight_assignment",
+			ErrorClass:         failure.ClassModelOutputInvalid,
+			ErrorCode:          string(evalcore.CodeInvalidFinalChecklist),
+			Message:            "final question budget exceeded",
+			AttemptCount:       3,
+			Diagnostics:        []evalcore.LimitDiagnostic{{LimitName: "max_final_questions", ConfiguredLimit: 64, ObservedCount: 65}},
+			ArtifactReferences: []string{"checklists/checklist-failed/llm/weight_assignment/attempt-3/response.body"},
+		},
+		CreatedAt: time.Unix(1_700_000_000, 0).UTC(),
+	}
+	store := newFakeStore()
+	store.checklists["checklist-failed"] = db.Checklist{ID: "checklist-failed", Status: db.StatusFailed, Failure: record}
+	store.evaluations["evaluation-failed"] = db.Evaluation{ID: "evaluation-failed", ChecklistID: "checklist-failed", Status: db.StatusFailed, Failure: record}
+	router := NewRouter(Dependencies{Store: store, Starter: &fakeStarter{}})
+
+	for _, path := range []string{"/checklists/checklist-failed", "/evaluations/evaluation-failed"} {
+		resp := request(t, router, http.MethodGet, path, "")
+		assertStatus(t, resp, http.StatusOK)
+		body := resp.Body.String()
+		if strings.Contains(body, rawSentinel) || strings.Contains(body, "error_message") {
+			t.Fatalf("unsafe or legacy failure field in %s response: %s", path, body)
+		}
+		var got map[string]any
+		decodeBody(t, resp, &got)
+		projected, ok := got["failure"].(map[string]any)
+		if !ok || projected["id"] != "failure-1" || projected["workflow_id"] != "workflow-1" || projected["attempt_count"] != float64(3) {
+			t.Fatalf("structured failure in %s response = %#v", path, got["failure"])
+		}
+		if _, exists := projected["checklist_id"]; exists {
+			t.Fatalf("internal entity foreign key exposed in %s response: %#v", path, projected)
+		}
+	}
+}
+
 func TestAPIContracts(t *testing.T) {
 	store := newFakeStore()
 	starter := &fakeStarter{}
@@ -52,9 +224,10 @@ func TestAPIContracts(t *testing.T) {
 		assertJSONFields(t, resp, map[string]any{"checklist_id": "running", "status": "running"})
 		assertJSONAbsent(t, resp, "error_message", "questions", "weights")
 
-		store.checklists["failed"] = db.Checklist{ID: "failed", Status: db.StatusFailed, ErrorMessage: strPtr("bad")}
+		store.checklists["failed"] = db.Checklist{ID: "failed", Status: db.StatusFailed, Failure: &failure.Record{ID: "failure", Details: failure.Details{Message: "bad"}}}
 		resp = request(t, router, http.MethodGet, "/checklists/failed", "")
-		assertJSONFields(t, resp, map[string]any{"checklist_id": "failed", "status": "failed", "error_message": "bad"})
+		assertJSONFields(t, resp, map[string]any{"checklist_id": "failed", "status": "failed"})
+		assertJSONPresent(t, resp, "failure")
 		assertJSONAbsent(t, resp, "questions", "weights")
 
 		store.checklists["succeeded"] = db.Checklist{
@@ -121,9 +294,10 @@ func TestAPIContracts(t *testing.T) {
 		assertJSONFields(t, resp, map[string]any{"evaluation_id": "running", "status": "running"})
 		assertJSONAbsent(t, resp, "error_message", "satisfied_points", "judgments")
 
-		store.evaluations["failed"] = db.Evaluation{ID: "failed", Status: db.StatusFailed, ErrorMessage: strPtr("bad")}
+		store.evaluations["failed"] = db.Evaluation{ID: "failed", Status: db.StatusFailed, Failure: &failure.Record{ID: "failure", Details: failure.Details{Message: "bad"}}}
 		resp = request(t, router, http.MethodGet, "/evaluations/failed", "")
-		assertJSONFields(t, resp, map[string]any{"evaluation_id": "failed", "status": "failed", "error_message": "bad"})
+		assertJSONFields(t, resp, map[string]any{"evaluation_id": "failed", "status": "failed"})
+		assertJSONPresent(t, resp, "failure")
 		assertJSONAbsent(t, resp, "satisfied_points", "judgments")
 
 		satisfied, total, rate := 4, 6, float64(4)/float64(6)
@@ -134,7 +308,11 @@ func TestAPIContracts(t *testing.T) {
 			TotalPossiblePoints: &total,
 			ChecklistPassRate:   &rate,
 			FailedQuestionIDs:   []string{"q3"},
-			Judgments:           []evalcore.Judgment{{QuestionID: "q2", Evidence: "yes evidence", Answer: evalcore.AnswerYes}},
+			Judgments: []evalcore.AggregatedJudgment{{
+				QuestionID: "q2",
+				Runs:       []evalcore.JudgmentRun{{RunIndex: 1, Evidence: "yes evidence", Answer: evalcore.AnswerYes}},
+				Answer:     evalcore.AnswerYes,
+			}},
 		}
 		resp = request(t, router, http.MethodGet, "/evaluations/succeeded", "")
 		assertStatus(t, resp, http.StatusOK)
@@ -173,7 +351,6 @@ func TestAPIContracts(t *testing.T) {
 	})
 }
 
-// TEST-013
 func TestAPIRouteSurface(t *testing.T) {
 	router := NewRouter(Dependencies{Store: newFakeStore(), Starter: &fakeStarter{}})
 	for _, tc := range []struct {
@@ -232,14 +409,23 @@ func assertJSONAbsent(t *testing.T, resp *httptest.ResponseRecorder, keys ...str
 	}
 }
 
+func assertJSONPresent(t *testing.T, resp *httptest.ResponseRecorder, keys ...string) {
+	t.Helper()
+	var got map[string]any
+	decodeBody(t, resp, &got)
+	for _, key := range keys {
+		if _, exists := got[key]; !exists {
+			t.Fatalf("field %s unexpectedly absent from %#v", key, got)
+		}
+	}
+}
+
 func decodeBody(t *testing.T, resp *httptest.ResponseRecorder, out any) {
 	t.Helper()
 	if err := json.Unmarshal(resp.Body.Bytes(), out); err != nil {
 		t.Fatalf("decode response error = %v; body=%s", err, resp.Body.String())
 	}
 }
-
-func strPtr(s string) *string { return &s }
 
 type fakeStore struct {
 	checklists          map[string]db.Checklist
@@ -248,17 +434,23 @@ type fakeStore struct {
 	getChecklistErr     error
 	createEvaluationErr error
 	getEvaluationErr    error
+	failChecklistErr    error
+	failEvaluationErr   error
+	failChecklistCalls  int
+	failEvaluationCalls int
+	lastEvaluationRuns  int
 }
 
 func newFakeStore() *fakeStore {
 	return &fakeStore{checklists: map[string]db.Checklist{}, evaluations: map[string]db.Evaluation{}}
 }
 
-func (s *fakeStore) CreateChecklistForWorkflow(ctx context.Context) (string, error) {
+func (s *fakeStore) CreateChecklistForWorkflow(ctx context.Context, evaluationRuns int) (string, error) {
 	if s.createChecklistErr != nil {
 		return "", s.createChecklistErr
 	}
-	s.checklists["checklist-1"] = db.Checklist{ID: "checklist-1", Status: db.StatusRunning, CreatedAt: time.Now()}
+	s.lastEvaluationRuns = evaluationRuns
+	s.checklists["checklist-1"] = db.Checklist{ID: "checklist-1", Status: db.StatusRunning, EvaluationRuns: evaluationRuns, CreatedAt: time.Now()}
 	return "checklist-1", nil
 }
 
@@ -290,6 +482,30 @@ func (s *fakeStore) GetEvaluation(ctx context.Context, id string) (db.Evaluation
 		return db.Evaluation{}, db.ErrNotFound
 	}
 	return evaluation, nil
+}
+
+func (s *fakeStore) FailChecklist(ctx context.Context, checklistID string, details failure.Details) error {
+	s.failChecklistCalls++
+	if s.failChecklistErr != nil {
+		return s.failChecklistErr
+	}
+	checklist := s.checklists[checklistID]
+	checklist.Status = db.StatusFailed
+	checklist.Failure = &failure.Record{ID: "failure-" + checklistID, ChecklistID: &checklistID, Details: details, CreatedAt: time.Now()}
+	s.checklists[checklistID] = checklist
+	return nil
+}
+
+func (s *fakeStore) FailEvaluation(ctx context.Context, evaluationID, checklistID string, details failure.Details) error {
+	s.failEvaluationCalls++
+	if s.failEvaluationErr != nil {
+		return s.failEvaluationErr
+	}
+	evaluation := s.evaluations[evaluationID]
+	evaluation.Status = db.StatusFailed
+	evaluation.Failure = &failure.Record{ID: "failure-" + evaluationID, EvaluationID: &evaluationID, Details: details, CreatedAt: time.Now()}
+	s.evaluations[evaluationID] = evaluation
+	return nil
 }
 
 type fakeStarter struct {

@@ -1,0 +1,89 @@
+name: ci
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  deterministic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Static and unit gates
+        run: make lint && make build && make test && make test-race
+      - name: Persistence integration gate
+        run: make test-integration
+      - name: Start deterministic full stack
+        env:
+          BIN_EVAL_LLM_BASE_URL: http://llm-fixture:4000
+          BIN_EVAL_LLM_API_KEY: deterministic-fixture
+          BIN_EVAL_MODEL_PROFILE: deterministic-fixture
+          BIN_EVAL_GIT_SHA: ${{ github.sha }}
+        run: docker compose --env-file deploy/compose/.env.example -f deploy/compose/docker-compose.yml --profile app --profile deterministic up -d --build
+      - name: Curl full-stack evaluation
+        env:
+          BIN_EVAL_LLM_BASE_URL: http://llm-fixture:4000
+          BIN_EVAL_EXTERNAL_STACK: "true"
+          BIN_EVAL_URL: http://127.0.0.1:18080
+          BIN_EVAL_MODEL_PROFILE: deterministic-fixture
+          BIN_EVAL_ENDPOINT_CLASS: deterministic
+          BIN_EVAL_FIXTURE_VERSION: v2
+          BIN_EVAL_GIT_SHA: ${{ github.sha }}
+        run: BIN_EVAL_EXTERNAL_STACK=true scripts/run_e2e.sh
+      - name: Capture container logs
+        if: always()
+        run: mkdir -p debug && docker compose --env-file deploy/compose/.env.example -f deploy/compose/docker-compose.yml --profile app --profile deterministic logs --no-color > debug/compose.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: deterministic-${{ github.sha }}
+          path: debug/
+
+  live:
+    if: github.event_name == 'release' || (github.event_name == 'push' && github.ref == 'refs/heads/master')
+    needs: deterministic
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require live LLM configuration
+        env:
+          BIN_EVAL_LLM_BASE_URL: ${{ secrets.BIN_EVAL_LLM_BASE_URL }}
+          BIN_EVAL_LLM_API_KEY: ${{ secrets.BIN_EVAL_LLM_API_KEY }}
+        run: test -n "$BIN_EVAL_LLM_BASE_URL" && test -n "$BIN_EVAL_LLM_API_KEY"
+      - name: Start live full stack
+        env:
+          BIN_EVAL_LLM_BASE_URL: ${{ secrets.BIN_EVAL_LLM_BASE_URL }}
+          BIN_EVAL_LLM_API_KEY: ${{ secrets.BIN_EVAL_LLM_API_KEY }}
+          BIN_EVAL_MODEL_PROFILE: ${{ vars.BIN_EVAL_MODEL_PROFILE }}
+          BIN_EVAL_GIT_SHA: ${{ github.sha }}
+        run: docker compose --env-file deploy/compose/.env.example -f deploy/compose/docker-compose.yml --profile app up -d --build
+      - name: Curl live full-stack evaluation
+        env:
+          BIN_EVAL_LLM_BASE_URL: ${{ secrets.BIN_EVAL_LLM_BASE_URL }}
+          BIN_EVAL_EXTERNAL_STACK: "true"
+          BIN_EVAL_URL: http://127.0.0.1:18080
+          BIN_EVAL_MODEL_PROFILE: ${{ vars.BIN_EVAL_MODEL_PROFILE || 'gpt-5.4-mini' }}
+          BIN_EVAL_ENDPOINT_CLASS: live
+          BIN_EVAL_FIXTURE_VERSION: not-applicable
+          BIN_EVAL_GIT_SHA: ${{ github.sha }}
+        run: BIN_EVAL_EXTERNAL_STACK=true scripts/run_e2e.sh
+      - name: Capture container logs
+        if: always()
+        run: mkdir -p debug && docker compose --env-file deploy/compose/.env.example -f deploy/compose/docker-compose.yml --profile app logs --no-color > debug/compose.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: live-${{ github.sha }}
+          path: debug/

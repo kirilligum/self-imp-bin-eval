@@ -10,7 +10,6 @@ import (
 	"go.temporal.io/sdk/testsuite"
 )
 
-// TEST-012
 func TestEvaluateAnswerWorkflow(t *testing.T) {
 	var suite testsuite.WorkflowTestSuite
 	env := suite.NewTestWorkflowEnvironment()
@@ -26,7 +25,7 @@ func TestEvaluateAnswerWorkflow(t *testing.T) {
 		{QuestionID: "q1", Evidence: "Satisfied.", Answer: evalcore.AnswerYes},
 		{QuestionID: "q2", Evidence: "Missing.", Answer: evalcore.AnswerNo},
 	}
-	checklist := db.Checklist{ID: "checklist-1", Status: db.StatusSucceeded, Questions: finalQuestions, Weights: weights}
+	checklist := db.Checklist{ID: "checklist-1", Status: db.StatusSucceeded, EvaluationRuns: 1, Questions: finalQuestions, Weights: weights}
 
 	input := EvaluateAnswerInput{EvaluationID: "evaluation-1", ChecklistID: "checklist-1", ModelAnswer: "answer"}
 	env.OnActivity(activities.ActivityWriteEvaluationInput, mock.Anything, activities.WriteEvaluationInputInput{
@@ -35,7 +34,7 @@ func TestEvaluateAnswerWorkflow(t *testing.T) {
 	env.OnActivity(activities.ActivityLoadChecklist, mock.Anything, activities.LoadChecklistInput{ChecklistID: "checklist-1"}).
 		Return(activities.LoadChecklistResult{Checklist: checklist, Task: "task", Context: "context"}, nil).Once()
 	env.OnActivity(activities.ActivityJudgeAnswer, mock.Anything, mock.MatchedBy(func(in activities.JudgeAnswerInput) bool {
-		return len(in.Questions) == 2 && in.Questions[0].ID == "q1" && in.Questions[1].ID == "q2"
+		return in.RunIndex == 1 && len(in.Questions) == 2 && in.Questions[0].ID == "q1" && in.Questions[1].ID == "q2"
 	})).Return(activities.JudgeAnswerResult{Judgments: judgments}, nil).Once()
 	env.OnActivity(activities.ActivitySucceedEvaluation, mock.Anything, mock.MatchedBy(func(in activities.SucceedEvaluationInput) bool {
 		return in.EvaluationID == "evaluation-1" &&
@@ -52,7 +51,39 @@ func TestEvaluateAnswerWorkflow(t *testing.T) {
 	env.AssertExpectations(t)
 }
 
-// TEST-019
+func TestP06RepeatedEvaluation(t *testing.T) {
+	env := newEvaluateAnswerTestEnv()
+	questions := []evalcore.FinalQuestion{
+		{ID: "q1", Ordinal: 1, DimensionID: "d1", SourceCandidateID: "c1", Rationale: "r", Question: "Q1?"},
+		{ID: "q2", Ordinal: 2, DimensionID: "d1", SourceCandidateID: "c2", Rationale: "r", Question: "Q2?"},
+	}
+	checklist := db.Checklist{ID: "checklist-runs", Status: db.StatusSucceeded, EvaluationRuns: 3, Questions: questions}
+	input := EvaluateAnswerInput{EvaluationID: "evaluation-runs", ChecklistID: checklist.ID, ModelAnswer: "answer"}
+	env.OnActivity(activities.ActivityWriteEvaluationInput, mock.Anything, mock.Anything).Return(nil).Once()
+	env.OnActivity(activities.ActivityLoadChecklist, mock.Anything, mock.Anything).
+		Return(activities.LoadChecklistResult{Checklist: checklist, Task: "task", Context: "context"}, nil).Once()
+	answers := map[int][]evalcore.Judgment{
+		1: {{QuestionID: "q1", Evidence: "run 1 yes", Answer: evalcore.AnswerYes}, {QuestionID: "q2", Evidence: "run 1 no", Answer: evalcore.AnswerNo}},
+		2: {{QuestionID: "q1", Evidence: "run 2 yes", Answer: evalcore.AnswerYes}, {QuestionID: "q2", Evidence: "run 2 yes", Answer: evalcore.AnswerYes}},
+		3: {{QuestionID: "q1", Evidence: "run 3 no", Answer: evalcore.AnswerNo}, {QuestionID: "q2", Evidence: "run 3 no", Answer: evalcore.AnswerNo}},
+	}
+	for runIndex := 1; runIndex <= 3; runIndex++ {
+		env.OnActivity(activities.ActivityJudgeAnswer, mock.Anything, mock.MatchedBy(func(in activities.JudgeAnswerInput) bool {
+			return in.EvaluationID == input.EvaluationID && in.RunIndex == runIndex
+		})).Return(activities.JudgeAnswerResult{Judgments: answers[runIndex]}, nil).Once()
+	}
+	env.OnActivity(activities.ActivitySucceedEvaluation, mock.Anything, mock.MatchedBy(func(in activities.SucceedEvaluationInput) bool {
+		return in.EvaluationID == input.EvaluationID && len(in.RunJudgments) == 6 &&
+			in.Score.SatisfiedPoints == 1 && len(in.Score.FailedQuestionIDs) == 1 && in.Score.FailedQuestionIDs[0] == "q2"
+	})).Return(nil).Once()
+
+	env.ExecuteWorkflow(EvaluateAnswerWorkflow, input)
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("workflow error = %v", err)
+	}
+	env.AssertExpectations(t)
+}
+
 func TestEvaluateAnswerWorkflowFailurePersistence(t *testing.T) {
 	var suite testsuite.WorkflowTestSuite
 	env := suite.NewTestWorkflowEnvironment()
@@ -64,7 +95,7 @@ func TestEvaluateAnswerWorkflowFailurePersistence(t *testing.T) {
 	env.OnActivity(activities.ActivityLoadChecklist, mock.Anything, activities.LoadChecklistInput{ChecklistID: "checklist-1"}).
 		Return(activities.LoadChecklistResult{Checklist: db.Checklist{ID: "checklist-1", Status: db.StatusRunning}}, nil).Once()
 	env.OnActivity(activities.ActivityFailEvaluation, mock.Anything, mock.MatchedBy(func(in activities.FailEvaluationInput) bool {
-		return in.EvaluationID == "evaluation-fail" && in.ChecklistID == "checklist-1" && in.ErrorMessage != ""
+		return in.EvaluationID == "evaluation-fail" && in.ChecklistID == "checklist-1" && in.Failure.Message != ""
 	})).Return(nil).Once()
 
 	env.ExecuteWorkflow(EvaluateAnswerWorkflow, input)
@@ -74,13 +105,12 @@ func TestEvaluateAnswerWorkflowFailurePersistence(t *testing.T) {
 	env.AssertExpectations(t)
 }
 
-// TEST-019
 func TestEvaluateAnswerWorkflowFailureMatrix(t *testing.T) {
 	finalQuestions := []evalcore.FinalQuestion{
 		{ID: "q1", Ordinal: 1, DimensionID: "d1", SourceCandidateID: "c1", Rationale: "normal", Question: "Normal?"},
 		{ID: "q2", Ordinal: 2, DimensionID: "d1", SourceCandidateID: "c2", Rationale: "detail", Question: "Specific?"},
 	}
-	succeededChecklist := db.Checklist{ID: "checklist-1", Status: db.StatusSucceeded, Questions: finalQuestions}
+	succeededChecklist := db.Checklist{ID: "checklist-1", Status: db.StatusSucceeded, EvaluationRuns: 1, Questions: finalQuestions}
 
 	t.Run("load checklist activity failure persists failed evaluation", func(t *testing.T) {
 		env := newEvaluateAnswerTestEnv()
@@ -180,6 +210,6 @@ func newEvaluateAnswerTestEnv() *testsuite.TestWorkflowEnvironment {
 
 func expectFailEvaluation(env *testsuite.TestWorkflowEnvironment, evaluationID, checklistID string) {
 	env.OnActivity(activities.ActivityFailEvaluation, mock.Anything, mock.MatchedBy(func(in activities.FailEvaluationInput) bool {
-		return in.EvaluationID == evaluationID && in.ChecklistID == checklistID && in.ErrorMessage != ""
+		return in.EvaluationID == evaluationID && in.ChecklistID == checklistID && in.Failure.Message != ""
 	})).Return(nil).Once()
 }

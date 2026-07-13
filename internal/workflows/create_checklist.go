@@ -20,12 +20,15 @@ type splitFuture struct {
 func CreateChecklistWorkflow(ctx workflow.Context, in CreateChecklistInput) error {
 	ctx = withActivityOptions(ctx)
 	limits := in.Limits.WithDefaults()
+	if err := limits.Validate(); err != nil {
+		return failChecklist(ctx, in.ChecklistID, "validate_limits", err)
+	}
 	if err := workflow.ExecuteActivity(ctx, activities.ActivityWriteChecklistInputs, activities.WriteChecklistInputsInput{
 		ChecklistID: in.ChecklistID,
 		Task:        in.Task,
 		Context:     in.Context,
 	}).Get(ctx, nil); err != nil {
-		return failChecklist(ctx, in.ChecklistID, err)
+		return failChecklist(ctx, in.ChecklistID, "write_checklist_inputs", err)
 	}
 
 	var analyzed activities.AnalyzeDimensionsResult
@@ -35,10 +38,10 @@ func CreateChecklistWorkflow(ctx workflow.Context, in CreateChecklistInput) erro
 		Context:     in.Context,
 		Limits:      limits,
 	}).Get(ctx, &analyzed); err != nil {
-		return failChecklist(ctx, in.ChecklistID, err)
+		return failChecklist(ctx, in.ChecklistID, "dimension_analysis", err)
 	}
 	if err := evalcore.ValidateDimensions(analyzed.Dimensions, limits); err != nil {
-		return failChecklist(ctx, in.ChecklistID, err)
+		return failChecklist(ctx, in.ChecklistID, "dimension_analysis", err)
 	}
 
 	questionFutures := make([]workflow.Future, len(analyzed.Dimensions))
@@ -55,12 +58,12 @@ func CreateChecklistWorkflow(ctx workflow.Context, in CreateChecklistInput) erro
 	for i, future := range questionFutures {
 		var generated activities.GenerateQuestionsForDimensionResult
 		if err := future.Get(ctx, &generated); err != nil {
-			return failChecklist(ctx, in.ChecklistID, err)
+			return failChecklist(ctx, in.ChecklistID, "question_generation", err)
 		}
 		candidates = append(candidates, evalcore.AssignCandidateQuestionIDs(analyzed.Dimensions[i].ID, len(candidates)+1, generated.Questions)...)
 	}
 	if err := evalcore.ValidateCandidateQuestions(analyzed.Dimensions, candidates, limits); err != nil {
-		return failChecklist(ctx, in.ChecklistID, err)
+		return failChecklist(ctx, in.ChecklistID, "question_generation", err)
 	}
 
 	var weighted activities.AssignWeightsResult
@@ -71,10 +74,13 @@ func CreateChecklistWorkflow(ctx workflow.Context, in CreateChecklistInput) erro
 		CandidateQuestions: candidates,
 		Limits:             limits,
 	}).Get(ctx, &weighted); err != nil {
-		return failChecklist(ctx, in.ChecklistID, err)
+		return failChecklist(ctx, in.ChecklistID, "weight_assignment", err)
 	}
 	if err := evalcore.ValidateWeights(candidates, weighted.Weights, limits); err != nil {
-		return failChecklist(ctx, in.ChecklistID, err)
+		return failChecklist(ctx, in.ChecklistID, "weight_assignment", err)
+	}
+	if _, err := evalcore.ValidateProjectedFinalQuestionCount(in.ChecklistID, weighted.Weights, limits); err != nil {
+		return failChecklist(ctx, in.ChecklistID, "weight_assignment", err)
 	}
 
 	weightByCandidateID := make(map[string]evalcore.Weight, len(weighted.Weights))
@@ -102,14 +108,14 @@ func CreateChecklistWorkflow(ctx workflow.Context, in CreateChecklistInput) erro
 	for _, pending := range splitFutures {
 		var split activities.SplitQuestionResult
 		if err := pending.future.Get(ctx, &split); err != nil {
-			return failChecklist(ctx, in.ChecklistID, err)
+			return failChecklist(ctx, in.ChecklistID, "question_splitting", err)
 		}
 		splits = append(splits, split.Split)
 	}
 
 	finalQuestions, err := evalcore.BuildFinalChecklist(analyzed.Dimensions, candidates, weighted.Weights, splits, limits)
 	if err != nil {
-		return failChecklist(ctx, in.ChecklistID, err)
+		return failChecklist(ctx, in.ChecklistID, "build_final_checklist", err)
 	}
 	if err := workflow.ExecuteActivity(ctx, activities.ActivitySucceedChecklist, activities.SucceedChecklistInput{
 		ChecklistID:        in.ChecklistID,
@@ -117,17 +123,20 @@ func CreateChecklistWorkflow(ctx workflow.Context, in CreateChecklistInput) erro
 		CandidateQuestions: candidates,
 		Weights:            weighted.Weights,
 		Questions:          finalQuestions,
+		Limits:             limits,
 	}).Get(ctx, nil); err != nil {
-		return failChecklist(ctx, in.ChecklistID, err)
+		return failChecklist(ctx, in.ChecklistID, "succeed_checklist", err)
 	}
 	return nil
 }
 
-func failChecklist(ctx workflow.Context, checklistID string, cause error) error {
+func failChecklist(ctx workflow.Context, checklistID, stage string, cause error) error {
 	disconnected, _ := workflow.NewDisconnectedContext(ctx)
-	_ = workflow.ExecuteActivity(disconnected, activities.ActivityFailChecklist, activities.FailChecklistInput{
-		ChecklistID:  checklistID,
-		ErrorMessage: cause.Error(),
-	}).Get(disconnected, nil)
+	if err := workflow.ExecuteActivity(disconnected, activities.ActivityFailChecklist, activities.FailChecklistInput{
+		ChecklistID: checklistID,
+		Failure:     workflowFailureDetails(ctx, stage, cause),
+	}).Get(disconnected, nil); err != nil {
+		return err
+	}
 	return cause
 }

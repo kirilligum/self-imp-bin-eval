@@ -10,8 +10,6 @@ import (
 	"go.temporal.io/sdk/testsuite"
 )
 
-// TEST-012
-// TEST-019
 func TestCreateChecklistWorkflow(t *testing.T) {
 	var suite testsuite.WorkflowTestSuite
 	env := suite.NewTestWorkflowEnvironment()
@@ -63,7 +61,7 @@ func TestCreateChecklistWorkflow(t *testing.T) {
 		ChecklistID: "checklist-1", Task: "task", Context: "context", CandidateQuestion: candidates[1], Weight: weights[1], Limits: limits,
 	}).Return(activities.SplitQuestionResult{Split: split}, nil).Once()
 	env.OnActivity(activities.ActivitySucceedChecklist, mock.Anything, activities.SucceedChecklistInput{
-		ChecklistID: "checklist-1", Dimensions: dimensions, CandidateQuestions: candidates, Weights: weights, Questions: finalQuestions,
+		ChecklistID: "checklist-1", Dimensions: dimensions, CandidateQuestions: candidates, Weights: weights, Questions: finalQuestions, Limits: limits,
 	}).Return(nil).Once()
 
 	env.ExecuteWorkflow(CreateChecklistWorkflow, input)
@@ -73,7 +71,6 @@ func TestCreateChecklistWorkflow(t *testing.T) {
 	env.AssertExpectations(t)
 }
 
-// TEST-019
 func TestWorkflowFailurePersistence(t *testing.T) {
 	var suite testsuite.WorkflowTestSuite
 	env := suite.NewTestWorkflowEnvironment()
@@ -91,7 +88,7 @@ func TestWorkflowFailurePersistence(t *testing.T) {
 	env.OnActivity(activities.ActivityGenerateQuestionsForDimension, mock.Anything, mock.Anything).Return(activities.GenerateQuestionsForDimensionResult{Questions: drafts}, nil).Once()
 	env.OnActivity(activities.ActivityAssignWeights, mock.Anything, mock.Anything).Return(activities.AssignWeightsResult{Weights: allZero}, nil).Once()
 	env.OnActivity(activities.ActivityFailChecklist, mock.Anything, mock.MatchedBy(func(in activities.FailChecklistInput) bool {
-		return in.ChecklistID == "checklist-fail" && in.ErrorMessage != ""
+		return in.ChecklistID == "checklist-fail" && in.Failure.Message != ""
 	})).Return(nil).Once()
 
 	env.ExecuteWorkflow(CreateChecklistWorkflow, input)
@@ -101,7 +98,6 @@ func TestWorkflowFailurePersistence(t *testing.T) {
 	env.AssertExpectations(t)
 }
 
-// TEST-019
 func TestCreateChecklistWorkflowFailureMatrix(t *testing.T) {
 	t.Run("invalid analyzed dimensions fail before question generation", func(t *testing.T) {
 		env := newCreateChecklistTestEnv()
@@ -190,6 +186,32 @@ func TestCreateChecklistWorkflowFailureMatrix(t *testing.T) {
 	})
 }
 
+func TestP06CompositionalWeightsAndEffectiveLimits(t *testing.T) {
+	env := newCreateChecklistTestEnv()
+	limits := evalcore.ChecklistLimits{
+		MaxDimensions:             6,
+		MaxCandidatesPerDimension: 8,
+		MaxSplitCount:             4,
+		MaxFinalQuestions:         1,
+	}
+	input := CreateChecklistInput{ChecklistID: "checklist-projected-limit", Task: "task", Context: "context", Limits: limits}
+	dimensions := []evalcore.Dimension{{ID: "d1", Ordinal: 1, Name: "Correctness", Rubric: "Check correctness.", Rationale: "Core."}}
+	drafts := []evalcore.DraftQuestion{{Rationale: "compound", Question: "Does it identify and fix the issue?"}}
+	weights := []evalcore.Weight{{CandidateQuestionID: "c1", Rationale: "two obligations", Weight: 2}}
+
+	env.OnActivity(activities.ActivityWriteChecklistInputs, mock.Anything, mock.Anything).Return(nil).Once()
+	env.OnActivity(activities.ActivityAnalyzeDimensions, mock.Anything, mock.Anything).Return(activities.AnalyzeDimensionsResult{Dimensions: dimensions}, nil).Once()
+	env.OnActivity(activities.ActivityGenerateQuestionsForDimension, mock.Anything, mock.Anything).Return(activities.GenerateQuestionsForDimensionResult{Questions: drafts}, nil).Once()
+	env.OnActivity(activities.ActivityAssignWeights, mock.Anything, mock.Anything).Return(activities.AssignWeightsResult{Weights: weights}, nil).Once()
+	expectFailChecklist(env, input.ChecklistID)
+
+	env.ExecuteWorkflow(CreateChecklistWorkflow, input)
+	if env.GetWorkflowError() == nil {
+		t.Fatal("expected projected final-count failure")
+	}
+	env.AssertExpectations(t)
+}
+
 func newCreateChecklistTestEnv() *testsuite.TestWorkflowEnvironment {
 	var suite testsuite.WorkflowTestSuite
 	env := suite.NewTestWorkflowEnvironment()
@@ -200,7 +222,7 @@ func newCreateChecklistTestEnv() *testsuite.TestWorkflowEnvironment {
 
 func expectFailChecklist(env *testsuite.TestWorkflowEnvironment, checklistID string) {
 	env.OnActivity(activities.ActivityFailChecklist, mock.Anything, mock.MatchedBy(func(in activities.FailChecklistInput) bool {
-		return in.ChecklistID == checklistID && in.ErrorMessage != ""
+		return in.ChecklistID == checklistID && in.Failure.Message != ""
 	})).Return(nil).Once()
 }
 

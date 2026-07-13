@@ -8,7 +8,6 @@ import (
 )
 
 const QuestionRequirementsPrompt = "Questions must be binary yes/no checks, atomic, answer-independent, tied to one concrete requirement, and answerable from a future model answer."
-const QuestionOutputPrompt = "The response object has a questions array; each item has rationale and question."
 
 type Message struct {
 	Role    string `json:"role"`
@@ -35,7 +34,7 @@ func BuildDimensionAnalysisRequest(task, contextText, modelProfile string, limit
 		SchemaName:   "dimension_analysis",
 		Schema:       DimensionAnalysisSchema(limits),
 		Messages: []Message{
-			{Role: "system", Content: "Identify rubric dimensions for evaluating answers to the supplied task and context. Each dimension should cover a distinct requirement area with a concise rubric and rationale. The response object has a dimensions array; each item has name, rubric, and rationale."},
+			{Role: "system", Content: "Identify distinct rubric dimensions for evaluating answers to the supplied task and context. Give each dimension a concise rubric and rationale."},
 			{Role: "user", Content: mustJSON(payload)},
 		},
 	}
@@ -54,7 +53,7 @@ func BuildQuestionGenerationRequest(task, contextText, modelProfile string, dime
 		SchemaName:   "question_generation",
 		Schema:       QuestionGenerationSchema(limits),
 		Messages: []Message{
-			{Role: "system", Content: "Generate candidate evaluation questions for the supplied dimension. " + QuestionRequirementsPrompt + " " + QuestionOutputPrompt + " Do not leave rationale or question blank."},
+			{Role: "system", Content: "Generate candidate evaluation questions for the supplied dimension. " + QuestionRequirementsPrompt + " Give a rationale for each question."},
 			{Role: "user", Content: mustJSON(payload)},
 		},
 	}
@@ -89,7 +88,7 @@ func BuildWeightAssignmentRequest(task, contextText, modelProfile string, questi
 		SchemaName:   "weight_assignment",
 		Schema:       WeightAssignmentSchema(limits, len(payloadQuestions)),
 		Messages: []Message{
-			{Role: "system", Content: "Assign one diagnostic weight for every supplied candidate question ID. The response object has a weights array; each item has candidate_question_id, rationale, and weight. The weights array length equals candidate_count from the user payload; never return an empty weights array when candidate_count is greater than zero. Use 0 to delete duplicate, redundant, too broad, or not useful questions. Use 1 for normal questions. Use a higher integer when a question is important or broad enough to split into that many more specific questions. There is one item per candidate ID and no blank rationale."},
+			{Role: "system", Content: "Assign one diagnostic split count to every supplied candidate question ID and explain each assignment. Use 0 to delete a question that is not useful or is semantically duplicate. Use 1 when the question contains one atomic requirement. Use 2, 3, or 4 only when the question combines exactly that many independently judgeable requirements and should be split into that many questions."},
 			{Role: "user", Content: mustJSON(payload)},
 		},
 	}
@@ -109,7 +108,7 @@ func BuildQuestionSplittingRequest(task, contextText, modelProfile string, candi
 		SchemaName:   "question_splitting",
 		Schema:       QuestionSplittingSchema(limits, weight.Weight),
 		Messages: []Message{
-			{Role: "system", Content: "Split the supplied candidate question into the requested number of more specific questions. " + QuestionRequirementsPrompt + " " + QuestionOutputPrompt + " Do not leave rationale or question blank."},
+			{Role: "system", Content: "Split the supplied candidate question into exactly the requested number of specific questions. " + QuestionRequirementsPrompt + " Give a rationale for each question."},
 			{Role: "user", Content: mustJSON(payload)},
 		},
 	}
@@ -140,7 +139,7 @@ func BuildBinaryJudgingRequest(task, contextText, modelAnswer, modelProfile stri
 		SchemaName:   "binary_judging",
 		Schema:       BinaryJudgingSchema(len(payloadQuestions)),
 		Messages: []Message{
-			{Role: "system", Content: "For each supplied final question ID and text, judge whether the answer directly satisfies it. The response object has a judgments array; each item has question_id, evidence, and answer. Answer yes only when the model answer contains concrete evidence for the requirement; otherwise answer no. There is one judgment per ID and no blank evidence."},
+			{Role: "system", Content: "For each supplied final question ID and text, judge whether the model answer directly satisfies it. Answer yes only when the model answer contains concrete evidence for the requirement; otherwise answer no. Explain the evidence for every judgment."},
 			{Role: "user", Content: mustJSON(payload)},
 		},
 	}

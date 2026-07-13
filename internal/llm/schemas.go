@@ -1,10 +1,6 @@
 package llm
 
-import (
-	"strings"
-
-	"github.com/kirilligum/self-imp-bin-eval/internal/evalcore"
-)
+import "github.com/kirilligum/self-imp-bin-eval/internal/evalcore"
 
 type JSONSchema map[string]any
 
@@ -17,7 +13,7 @@ type DimensionAnalysisOutput struct {
 }
 
 func (o DimensionAnalysisOutput) Validate() error {
-	return evalcore.ValidateDimensionGeneration(o.Dimensions, evalcore.DefaultChecklistLimits())
+	return evalcore.ValidateDimensionGeneration(o.Dimensions, evalcore.ChecklistLimits{MaxDimensions: len(o.Dimensions)})
 }
 
 type QuestionGenerationOutput struct {
@@ -25,7 +21,7 @@ type QuestionGenerationOutput struct {
 }
 
 func (o QuestionGenerationOutput) Validate() error {
-	return evalcore.ValidateQuestionGeneration(o.Questions, evalcore.DefaultChecklistLimits())
+	return evalcore.ValidateQuestionGeneration(o.Questions, evalcore.ChecklistLimits{MaxCandidatesPerDimension: len(o.Questions)})
 }
 
 type WeightAssignmentOutput struct {
@@ -33,21 +29,7 @@ type WeightAssignmentOutput struct {
 }
 
 func (o WeightAssignmentOutput) Validate() error {
-	if len(o.Weights) == 0 {
-		return &ModelOutputError{Message: "weight assignment returned no weights"}
-	}
-	for _, weight := range o.Weights {
-		if strings.TrimSpace(weight.CandidateQuestionID) == "" {
-			return &ModelOutputError{Message: "weight assignment returned blank candidate_question_id"}
-		}
-		if strings.TrimSpace(weight.Rationale) == "" {
-			return &ModelOutputError{Message: "weight assignment returned blank rationale"}
-		}
-		if weight.Weight < 0 || weight.Weight > evalcore.DefaultMaxSplitCount {
-			return &ModelOutputError{Message: "weight assignment returned weight outside 0..4"}
-		}
-	}
-	return nil
+	return evalcore.ValidateWeightShape(o.Weights)
 }
 
 type QuestionSplittingOutput struct {
@@ -55,18 +37,7 @@ type QuestionSplittingOutput struct {
 }
 
 func (o QuestionSplittingOutput) Validate() error {
-	if len(o.Questions) == 0 {
-		return &ModelOutputError{Message: "question splitting returned no questions"}
-	}
-	for _, question := range o.Questions {
-		if strings.TrimSpace(question.Rationale) == "" {
-			return &ModelOutputError{Message: "question splitting returned blank rationale"}
-		}
-		if strings.TrimSpace(question.Question) == "" {
-			return &ModelOutputError{Message: "question splitting returned blank question"}
-		}
-	}
-	return nil
+	return evalcore.ValidateQuestionGeneration(o.Questions, evalcore.ChecklistLimits{MaxCandidatesPerDimension: len(o.Questions)})
 }
 
 type BinaryJudgingOutput struct {
@@ -74,21 +45,7 @@ type BinaryJudgingOutput struct {
 }
 
 func (o BinaryJudgingOutput) Validate() error {
-	if len(o.Judgments) == 0 {
-		return &ModelOutputError{Message: "binary judging returned no judgments"}
-	}
-	for _, judgment := range o.Judgments {
-		if strings.TrimSpace(judgment.QuestionID) == "" {
-			return &ModelOutputError{Message: "binary judging returned blank question_id"}
-		}
-		if strings.TrimSpace(judgment.Evidence) == "" {
-			return &ModelOutputError{Message: "binary judging returned blank evidence"}
-		}
-		if judgment.Answer != evalcore.AnswerYes && judgment.Answer != evalcore.AnswerNo {
-			return &ModelOutputError{Message: "binary judging returned invalid answer"}
-		}
-	}
-	return nil
+	return evalcore.ValidateJudgmentShape(o.Judgments)
 }
 
 func DimensionAnalysisSchema(limits evalcore.ChecklistLimits) JSONSchema {

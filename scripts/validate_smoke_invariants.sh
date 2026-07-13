@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# TEST-022
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
@@ -30,10 +29,11 @@ for case_dir in "$DEBUG_DIR"/*; do
   jq -e '
     . as $root |
     $root.status == "succeeded" and
+    ($root.evaluation_runs | type == "number" and . > 0 and . % 2 == 1) and
     ($root.dimensions | type == "array" and length > 0) and
     ($root.candidate_questions | type == "array" and length > 0) and
     ($root.weights | type == "array" and length == ($root.candidate_questions | length)) and
-    ($root.questions | type == "array" and length > 0) and
+    ($root.questions | type == "array" and length >= 8) and
     (($root.candidate_questions | map(.id) | unique | length) == ($root.candidate_questions | length)) and
     (($root.weights | map(.candidate_question_id) | sort) == ($root.candidate_questions | map(.id) | sort)) and
     all($root.weights[]; (.weight | type == "number") and .weight >= 0 and .weight <= 4) and
@@ -53,6 +53,7 @@ for case_dir in "$DEBUG_DIR"/*; do
   ' "$case_dir/checklist.json" >/dev/null || fail "checklist invariant failed for $case_name"
 
   final_count="$(jq -r '.questions | length' "$case_dir/checklist.json")"
+  evaluation_runs="$(jq -r '.evaluation_runs' "$case_dir/checklist.json")"
   checklist_id="$(jq -r '.checklist_id' "$case_dir/checklist.json")"
   case_rates='{}'
 
@@ -60,12 +61,20 @@ for case_dir in "$DEBUG_DIR"/*; do
     eval_file="$case_dir/evaluation_${quality}.json"
     [[ -f "$eval_file" ]] || fail "missing evaluation capture: $eval_file"
 
-    jq -e --argjson final_count "$final_count" '
+    jq -e --argjson final_count "$final_count" --argjson evaluation_runs "$evaluation_runs" '
       .status == "succeeded" and
       (.total_possible_points == $final_count) and
       (.judgments | type == "array" and length == $final_count) and
       ((.judgments | map(.question_id) | sort) == (.judgments | map(.question_id) | unique | sort)) and
-      all(.judgments[]; (.answer == "yes" or .answer == "no") and (.evidence | type == "string" and length > 0))
+      all(.judgments[];
+        (.answer == "yes" or .answer == "no") and
+        (.runs | type == "array" and length == $evaluation_runs) and
+        ((.runs | map(.run_index)) == [range(1; $evaluation_runs + 1)]) and
+        all(.runs[]; (.answer == "yes" or .answer == "no") and (.evidence | type == "string" and length > 0)) and
+        (. as $judgment |
+          (($judgment.runs | map(select(.answer == "yes")) | length) > ($evaluation_runs / 2)) as $majority_yes |
+          (($majority_yes and $judgment.answer == "yes") or (($majority_yes | not) and $judgment.answer == "no")))
+      )
     ' "$eval_file" >/dev/null || fail "evaluation invariant failed for $case_name/$quality"
 
     computed="$(jq -n --slurpfile checklist "$case_dir/checklist.json" --slurpfile evaluation "$eval_file" '
@@ -88,7 +97,8 @@ for case_dir in "$DEBUG_DIR"/*; do
     ' "$eval_file" >/dev/null || fail "score recomputation failed for $case_name/$quality"
 
     rate="$(jq -r '.checklist_pass_rate' "$eval_file")"
-    case_rates="$(jq -n --argjson current "$case_rates" --arg quality "$quality" --argjson rate "$rate" '$current + {($quality): $rate}')"
+    run_rates="$(jq --argjson final_count "$final_count" '[range(1; (.judgments[0].runs | length) + 1) as $run | ([.judgments[].runs[] | select(.run_index == $run and .answer == "yes")] | length) / $final_count]' "$eval_file")"
+    case_rates="$(jq -n --argjson current "$case_rates" --arg quality "$quality" --argjson rate "$rate" --argjson run_rates "$run_rates" '$current + {($quality): {aggregate: $rate, runs: $run_rates}}')"
   done
 
   case_report="$(jq -n \
@@ -96,7 +106,8 @@ for case_dir in "$DEBUG_DIR"/*; do
     --arg checklist_id "$checklist_id" \
     --argjson final_count "$final_count" \
     --argjson rates "$case_rates" \
-    '{case: $case_name, checklist_id: $checklist_id, final_question_count: $final_count, pass_rates: $rates}')"
+    --argjson evaluation_runs "$evaluation_runs" \
+    '{case: $case_name, checklist_id: $checklist_id, final_question_count: $final_count, evaluation_runs: $evaluation_runs, pass_rates: $rates}')"
   if [[ "$first_case" -eq 0 ]]; then
     printf ',' >> "$tmp_report"
   fi

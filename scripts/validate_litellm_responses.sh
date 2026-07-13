@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# TEST-002
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "${ROOT_DIR}/scripts/lib/local_env.sh"
@@ -27,10 +26,13 @@ fi
 models_tmp="$(mktemp)"
 response_tmp="$(mktemp)"
 payload_tmp="$(mktemp)"
-trap 'rm -f "$models_tmp" "$response_tmp" "$payload_tmp"' EXIT
+auth_config="$(mktemp)"
+chmod 0600 "$auth_config"
+printf 'header = "Authorization: Bearer %s"\n' "$API_KEY" > "$auth_config"
+trap 'rm -f "$models_tmp" "$response_tmp" "$payload_tmp" "$auth_config"' EXIT
 
 curl -fsS \
-  -H "Authorization: Bearer ${API_KEY}" \
+  --config "$auth_config" \
   "${BASE_URL}/v1/models" \
   -o "$models_tmp"
 
@@ -49,17 +51,18 @@ jq -n --arg model "$MODEL" '{
       content: [
         {
           type: "input_text",
-          text: "Return only this JSON object with no markdown: {\"ok\":true}"
+          text: "Provide the successful structured contract result."
         }
       ]
     }
   ],
-  text: {
-    format: {
-      type: "json_schema",
+  tools: [
+    {
+      type: "function",
       name: "bin_eval_litellm_contract",
+      description: "Report whether this structured-output contract call succeeded.",
       strict: true,
-      schema: {
+      parameters: {
         type: "object",
         additionalProperties: false,
         required: ["ok"],
@@ -68,29 +71,33 @@ jq -n --arg model "$MODEL" '{
         }
       }
     }
+  ],
+  tool_choice: {
+    type: "function",
+    name: "bin_eval_litellm_contract"
   }
 }' > "$payload_tmp"
 
 curl -fsS \
-  -H "Authorization: Bearer ${API_KEY}" \
+  --config "$auth_config" \
   -H "Content-Type: application/json" \
   -X POST \
   --data @"$payload_tmp" \
   "${BASE_URL}/v1/responses" \
   -o "$response_tmp"
 
-output_text="$(
+arguments="$(
   awk '/^data: / { sub(/^data: /, ""); if ($0 != "[DONE]") print }' "$response_tmp" |
-    jq -r 'select(type == "object" and .type == "response.output_text.done") | .text' |
+    jq -r 'select(type == "object" and .type == "response.function_call_arguments.done") | .arguments' |
     tail -n 1
 )"
 
-if [[ -z "$output_text" ]]; then
-  echo "LiteLLM Responses stream did not include response.output_text.done" >&2
+if [[ -z "$arguments" ]]; then
+  echo "LiteLLM Responses stream did not include forced function arguments" >&2
   exit 1
 fi
-if ! jq -e '.ok == true' <<<"$output_text" >/dev/null; then
-  echo "LiteLLM Responses output failed JSON contract" >&2
+if ! jq -e '.ok == true' <<<"$arguments" >/dev/null; then
+  echo "LiteLLM Responses output failed strict function schema contract" >&2
   exit 1
 fi
 

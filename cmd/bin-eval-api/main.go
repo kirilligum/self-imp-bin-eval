@@ -32,7 +32,8 @@ func main() {
 	defer temporalClient.Close()
 
 	handler := api.NewRouter(api.Dependencies{
-		Store: store,
+		Store:             store,
+		MaxEvaluationRuns: cfg.MaxEvaluationRuns,
 		Starter: api.TemporalStarter{
 			Client:          temporalClient,
 			TaskQueue:       cfg.TemporalTaskQ,

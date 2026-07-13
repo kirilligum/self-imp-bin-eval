@@ -5,7 +5,49 @@ import (
 	"testing"
 )
 
-// TEST-002
+func TestP06RepeatedEvaluation(t *testing.T) {
+	questions := []FinalQuestion{
+		{ID: "q1", Ordinal: 1, DimensionID: "d1", SourceCandidateID: "c1", Rationale: "r", Question: "Q1?"},
+		{ID: "q2", Ordinal: 2, DimensionID: "d1", SourceCandidateID: "c2", Rationale: "r", Question: "Q2?"},
+	}
+	runs := []RunJudgment{
+		{RunIndex: 3, QuestionID: "q2", Evidence: "run 3 no", Answer: AnswerNo},
+		{RunIndex: 1, QuestionID: "q1", Evidence: "run 1 yes", Answer: AnswerYes},
+		{RunIndex: 2, QuestionID: "q2", Evidence: "run 2 yes", Answer: AnswerYes},
+		{RunIndex: 1, QuestionID: "q2", Evidence: "run 1 no", Answer: AnswerNo},
+		{RunIndex: 3, QuestionID: "q1", Evidence: "run 3 no", Answer: AnswerNo},
+		{RunIndex: 2, QuestionID: "q1", Evidence: "run 2 yes", Answer: AnswerYes},
+	}
+	result, err := AggregateJudgments(questions, runs, 3)
+	if err != nil {
+		t.Fatalf("AggregateJudgments() error = %v", err)
+	}
+	if len(result.Judgments) != 2 || result.Judgments[0].QuestionID != "q1" || result.Judgments[0].Answer != AnswerYes || result.Judgments[1].Answer != AnswerNo {
+		t.Fatalf("aggregated judgments = %#v", result.Judgments)
+	}
+	if len(result.Judgments[0].Runs) != 3 || result.Judgments[0].Runs[0].RunIndex != 1 || result.Judgments[0].Runs[2].RunIndex != 3 {
+		t.Fatalf("ordered runs = %#v", result.Judgments[0].Runs)
+	}
+	if result.Score.SatisfiedPoints != 1 || result.Score.TotalPossiblePoints != 2 || len(result.Score.FailedQuestionIDs) != 1 || result.Score.FailedQuestionIDs[0] != "q2" {
+		t.Fatalf("majority score = %#v", result.Score)
+	}
+
+	for name, evaluationRuns := range map[string]int{"zero": 0, "even": 2} {
+		t.Run(name+" repetition count", func(t *testing.T) {
+			if _, err := AggregateJudgments(questions, runs, evaluationRuns); err == nil {
+				t.Fatal("expected invalid repetition count error")
+			}
+		})
+	}
+	if _, err := AggregateJudgments(questions, runs[:5], 3); err == nil {
+		t.Fatal("missing run judgment unexpectedly accepted")
+	}
+	duplicate := append(append([]RunJudgment(nil), runs...), runs[0])
+	if _, err := AggregateJudgments(questions, duplicate, 3); err == nil {
+		t.Fatal("duplicate run judgment unexpectedly accepted")
+	}
+}
+
 func TestEvalcoreRubricRefinement(t *testing.T) {
 	dimensions, candidates := validRubricInputs()
 	weights := []Weight{
@@ -67,7 +109,6 @@ func TestEvalcoreRubricRefinement(t *testing.T) {
 	}
 }
 
-// TEST-002
 func TestEvalcoreRubricRefinementValidation(t *testing.T) {
 	dimensions, candidates := validRubricInputs()
 	validWeights := []Weight{
@@ -138,7 +179,6 @@ func TestEvalcoreRubricRefinementValidation(t *testing.T) {
 	})
 }
 
-// TEST-002
 func TestEvalcorePairwiseCoreScenarios(t *testing.T) {
 	t.Run("PW01 all zero weights produce no final checklist", func(t *testing.T) {
 		dimensions, candidates := validRubricInputs()

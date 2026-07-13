@@ -2,7 +2,6 @@ package evalcore
 
 import "testing"
 
-// TEST-002
 func TestAssignDimensionAndCandidateIDs(t *testing.T) {
 	dimensions := AssignDimensionIDs([]DraftDimension{
 		{Name: "Correctness", Rubric: "Check correctness.", Rationale: "Core."},

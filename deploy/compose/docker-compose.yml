@@ -49,8 +49,63 @@ services:
       - garage-meta:/var/lib/garage/meta
       - garage-data:/var/lib/garage/data
 
+  api:
+    profiles: ["app"]
+    build:
+      context: ../..
+      dockerfile: deploy/compose/Dockerfile
+    restart: on-failure:5
+    depends_on:
+      postgres:
+        condition: service_healthy
+      temporal:
+        condition: service_started
+      garage:
+        condition: service_started
+    environment: &bin_eval_app_environment
+      BIN_EVAL_ENV: ci
+      BIN_EVAL_DATABASE_URL: postgres://bin_eval:bin_eval@postgres:5432/bin_eval?sslmode=disable
+      BIN_EVAL_TEMPORAL_ADDRESS: temporal:7233
+      BIN_EVAL_TEMPORAL_TASK_QUEUE: bin-eval-ci
+      BIN_EVAL_GARAGE_ENDPOINT: http://garage:3900
+      BIN_EVAL_GARAGE_ACCESS_KEY: ${BIN_EVAL_GARAGE_ACCESS_KEY}
+      BIN_EVAL_GARAGE_SECRET_KEY: ${BIN_EVAL_GARAGE_SECRET_KEY}
+      BIN_EVAL_ARTIFACT_BUCKET: ${BIN_EVAL_ARTIFACT_BUCKET}
+      BIN_EVAL_LLM_BASE_URL: ${BIN_EVAL_LLM_BASE_URL}
+      BIN_EVAL_LLM_API_KEY: ${BIN_EVAL_LLM_API_KEY}
+      BIN_EVAL_MODEL_PROFILE: ${BIN_EVAL_MODEL_PROFILE:-gpt-5.4-mini}
+      BIN_EVAL_MAX_EVALUATION_RUNS: ${BIN_EVAL_MAX_EVALUATION_RUNS:-5}
+      BIN_EVAL_URL: http://api:8080
+      BIN_EVAL_LISTEN_ADDR: 0.0.0.0:8080
+      BIN_EVAL_ALLOW_PUBLIC_BIND: "true"
+      BIN_EVAL_GIT_SHA: ${BIN_EVAL_GIT_SHA:-local}
+    ports:
+      - "127.0.0.1:${BIN_EVAL_API_PORT:-18080}:8080"
+
+  worker:
+    profiles: ["app"]
+    build:
+      context: ../..
+      dockerfile: deploy/compose/Dockerfile
+    entrypoint: ["/bin-eval-worker"]
+    restart: on-failure:5
+    depends_on:
+      postgres:
+        condition: service_healthy
+      temporal:
+        condition: service_started
+      garage:
+        condition: service_started
+    environment: *bin_eval_app_environment
+
+  llm-fixture:
+    profiles: ["deterministic"]
+    build:
+      context: ../..
+      dockerfile: deploy/compose/Dockerfile
+    entrypoint: ["/bin-eval-llm-fixture"]
+
 volumes:
   postgres-data:
   garage-meta:
   garage-data:
-

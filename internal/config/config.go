@@ -29,21 +29,22 @@ var RequiredEnvNames = []string{
 }
 
 type Config struct {
-	Env             string
-	DatabaseURL     string
-	TemporalAddress string
-	TemporalTaskQ   string
-	GarageEndpoint  string
-	GarageAccessKey string
-	GarageSecretKey string
-	ArtifactBucket  string
-	LLMBaseURL      string
-	LLMAPIKey       string
-	ModelProfile    string
-	URL             string
-	ListenAddr      string
-	GitSHA          string
-	ChecklistLimits evalcore.ChecklistLimits
+	Env               string
+	DatabaseURL       string
+	TemporalAddress   string
+	TemporalTaskQ     string
+	GarageEndpoint    string
+	GarageAccessKey   string
+	GarageSecretKey   string
+	ArtifactBucket    string
+	LLMBaseURL        string
+	LLMAPIKey         string
+	ModelProfile      string
+	URL               string
+	ListenAddr        string
+	GitSHA            string
+	ChecklistLimits   evalcore.ChecklistLimits
+	MaxEvaluationRuns int
 }
 
 func Load() (Config, error) {
@@ -70,22 +71,27 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	maxEvaluationRuns, err := getenvPositiveInt("BIN_EVAL_MAX_EVALUATION_RUNS", evalcore.DefaultMaxEvaluationRuns)
+	if err != nil {
+		return Config{}, err
+	}
 	cfg := Config{
-		Env:             get("BIN_EVAL_ENV"),
-		DatabaseURL:     get("BIN_EVAL_DATABASE_URL"),
-		TemporalAddress: get("BIN_EVAL_TEMPORAL_ADDRESS"),
-		TemporalTaskQ:   getenvDefault("BIN_EVAL_TEMPORAL_TASK_QUEUE", "bin-eval"),
-		GarageEndpoint:  get("BIN_EVAL_GARAGE_ENDPOINT"),
-		GarageAccessKey: get("BIN_EVAL_GARAGE_ACCESS_KEY"),
-		GarageSecretKey: get("BIN_EVAL_GARAGE_SECRET_KEY"),
-		ArtifactBucket:  get("BIN_EVAL_ARTIFACT_BUCKET"),
-		LLMBaseURL:      get("BIN_EVAL_LLM_BASE_URL"),
-		LLMAPIKey:       getAlias("BIN_EVAL_LLM_API_KEY", "LITELLM_MASTER_KEY"),
-		ModelProfile:    get("BIN_EVAL_MODEL_PROFILE"),
-		URL:             get("BIN_EVAL_URL"),
-		ListenAddr:      get("BIN_EVAL_LISTEN_ADDR"),
-		GitSHA:          strings.TrimSpace(os.Getenv("BIN_EVAL_GIT_SHA")),
-		ChecklistLimits: limits,
+		Env:               get("BIN_EVAL_ENV"),
+		DatabaseURL:       get("BIN_EVAL_DATABASE_URL"),
+		TemporalAddress:   get("BIN_EVAL_TEMPORAL_ADDRESS"),
+		TemporalTaskQ:     getenvDefault("BIN_EVAL_TEMPORAL_TASK_QUEUE", "bin-eval"),
+		GarageEndpoint:    get("BIN_EVAL_GARAGE_ENDPOINT"),
+		GarageAccessKey:   get("BIN_EVAL_GARAGE_ACCESS_KEY"),
+		GarageSecretKey:   get("BIN_EVAL_GARAGE_SECRET_KEY"),
+		ArtifactBucket:    get("BIN_EVAL_ARTIFACT_BUCKET"),
+		LLMBaseURL:        get("BIN_EVAL_LLM_BASE_URL"),
+		LLMAPIKey:         getAlias("BIN_EVAL_LLM_API_KEY", "LITELLM_MASTER_KEY"),
+		ModelProfile:      get("BIN_EVAL_MODEL_PROFILE"),
+		URL:               get("BIN_EVAL_URL"),
+		ListenAddr:        get("BIN_EVAL_LISTEN_ADDR"),
+		GitSHA:            strings.TrimSpace(os.Getenv("BIN_EVAL_GIT_SHA")),
+		ChecklistLimits:   limits,
+		MaxEvaluationRuns: maxEvaluationRuns,
 	}
 	if len(missing) > 0 {
 		return Config{}, fmt.Errorf("missing required environment variables: %s", strings.Join(missing, ", "))
@@ -141,6 +147,9 @@ func loadChecklistLimits() (evalcore.ChecklistLimits, error) {
 	}
 	if limits.MaxFinalQuestions, err = getenvPositiveInt("BIN_EVAL_MAX_FINAL_QUESTIONS", limits.MaxFinalQuestions); err != nil {
 		return evalcore.ChecklistLimits{}, err
+	}
+	if err := limits.Validate(); err != nil {
+		return evalcore.ChecklistLimits{}, fmt.Errorf("invalid checklist limits: %w", err)
 	}
 	return limits, nil
 }

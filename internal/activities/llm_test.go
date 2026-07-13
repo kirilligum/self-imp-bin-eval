@@ -1,20 +1,23 @@
 package activities
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/kirilligum/self-imp-bin-eval/internal/artifacts"
 	"github.com/kirilligum/self-imp-bin-eval/internal/db"
 	"github.com/kirilligum/self-imp-bin-eval/internal/evalcore"
+	"github.com/kirilligum/self-imp-bin-eval/internal/failure"
 	"github.com/kirilligum/self-imp-bin-eval/internal/llm"
 	"go.temporal.io/sdk/temporal"
 )
 
-// TEST-008
 func TestLLMActivitiesWriteArtifactsAndPayloads(t *testing.T) {
 	writer := &fakeArtifactWriter{objects: map[string][]byte{}}
 	client := &fakeLLMClient{}
@@ -38,8 +41,8 @@ func TestLLMActivitiesWriteArtifactsAndPayloads(t *testing.T) {
 	if len(dResult.Dimensions) != 1 || dResult.Dimensions[0].ID != "d1" {
 		t.Fatalf("dimensions = %#v", dResult.Dimensions)
 	}
-	assertObjectWritten(t, writer, artifacts.ChecklistLLMRequestKey("checklist-1", artifacts.PromptDimensionAnalysis))
-	assertObjectWritten(t, writer, artifacts.ChecklistLLMResponseKey("checklist-1", artifacts.PromptDimensionAnalysis))
+	assertObjectWritten(t, writer, artifacts.ChecklistLLMRequestKey("checklist-1", artifacts.PromptDimensionAnalysis, 1))
+	assertObjectWritten(t, writer, artifacts.ChecklistLLMResponseKey("checklist-1", artifacts.PromptDimensionAnalysis, 1))
 
 	qResult, err := acts.GenerateQuestionsForDimension(ctx, GenerateQuestionsForDimensionInput{
 		ChecklistID: "checklist-1",
@@ -55,8 +58,8 @@ func TestLLMActivitiesWriteArtifactsAndPayloads(t *testing.T) {
 	if len(candidates) != 2 || candidates[0].ID != "c1" || candidates[0].DimensionID != "d1" {
 		t.Fatalf("candidate questions = %#v", candidates)
 	}
-	assertObjectWritten(t, writer, artifacts.ChecklistDimensionQuestionGenerationRequestKey("checklist-1", "d1"))
-	assertObjectWritten(t, writer, artifacts.ChecklistDimensionQuestionGenerationResponseKey("checklist-1", "d1"))
+	assertObjectWritten(t, writer, artifacts.ChecklistLLMRequestKey("checklist-1", artifacts.PromptQuestionGeneration+"/d1", 1))
+	assertObjectWritten(t, writer, artifacts.ChecklistLLMResponseKey("checklist-1", artifacts.PromptQuestionGeneration+"/d1", 1))
 
 	wResult, err := acts.AssignWeights(ctx, AssignWeightsInput{
 		ChecklistID:        "checklist-1",
@@ -68,8 +71,8 @@ func TestLLMActivitiesWriteArtifactsAndPayloads(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AssignWeights() error = %v", err)
 	}
-	assertObjectWritten(t, writer, artifacts.ChecklistLLMRequestKey("checklist-1", artifacts.PromptWeightAssignment))
-	assertObjectWritten(t, writer, artifacts.ChecklistLLMResponseKey("checklist-1", artifacts.PromptWeightAssignment))
+	assertObjectWritten(t, writer, artifacts.ChecklistLLMRequestKey("checklist-1", artifacts.PromptWeightAssignment, 1))
+	assertObjectWritten(t, writer, artifacts.ChecklistLLMResponseKey("checklist-1", artifacts.PromptWeightAssignment, 1))
 
 	sResult, err := acts.SplitQuestion(ctx, SplitQuestionInput{
 		ChecklistID:       "checklist-1",
@@ -82,8 +85,8 @@ func TestLLMActivitiesWriteArtifactsAndPayloads(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SplitQuestion() error = %v", err)
 	}
-	assertObjectWritten(t, writer, artifacts.ChecklistQuestionSplittingRequestKey("checklist-1", "c2"))
-	assertObjectWritten(t, writer, artifacts.ChecklistQuestionSplittingResponseKey("checklist-1", "c2"))
+	assertObjectWritten(t, writer, artifacts.ChecklistLLMRequestKey("checklist-1", artifacts.PromptQuestionSplitting+"/c2", 1))
+	assertObjectWritten(t, writer, artifacts.ChecklistLLMResponseKey("checklist-1", artifacts.PromptQuestionSplitting+"/c2", 1))
 
 	finalQuestions, err := evalcore.BuildFinalChecklist(dResult.Dimensions, candidates, wResult.Weights, []evalcore.SplitQuestions{sResult.Split}, limits)
 	if err != nil {
@@ -91,6 +94,7 @@ func TestLLMActivitiesWriteArtifactsAndPayloads(t *testing.T) {
 	}
 	jResult, err := acts.JudgeAnswer(ctx, JudgeAnswerInput{
 		EvaluationID: "evaluation-1",
+		RunIndex:     1,
 		Task:         "task",
 		Context:      "context",
 		ModelAnswer:  "answer",
@@ -102,8 +106,8 @@ func TestLLMActivitiesWriteArtifactsAndPayloads(t *testing.T) {
 	if len(jResult.Judgments) != 2 || jResult.Judgments[0].QuestionID != "q1" || jResult.Judgments[1].QuestionID != "q2" {
 		t.Fatalf("judgments = %#v", jResult.Judgments)
 	}
-	assertObjectWritten(t, writer, artifacts.EvaluationLLMRequestKey("evaluation-1", artifacts.PromptBinaryJudging))
-	assertObjectWritten(t, writer, artifacts.EvaluationLLMResponseKey("evaluation-1", artifacts.PromptBinaryJudging))
+	assertObjectWritten(t, writer, artifacts.EvaluationLLMRequestKey("evaluation-1", artifacts.PromptBinaryJudging+"/run-1", 1))
+	assertObjectWritten(t, writer, artifacts.EvaluationLLMResponseKey("evaluation-1", artifacts.PromptBinaryJudging+"/run-1", 1))
 
 	judgePayload := marshalString(t, client.requests[artifacts.PromptBinaryJudging])
 	for _, forbidden := range []string{"weight", "rationale", "candidate", "Excluded?"} {
@@ -116,7 +120,50 @@ func TestLLMActivitiesWriteArtifactsAndPayloads(t *testing.T) {
 	}
 }
 
-// TEST-008
+func TestP06ExactLLMArtifacts(t *testing.T) {
+	const rawSentinel = "RAW_INVALID_MODEL_OUTPUT"
+	requestBody := []byte(`{"model":"exact","stream":true}`)
+	responseBody := []byte("data: RAW_INVALID_MODEL_OUTPUT\n\n")
+	writer := &fakeArtifactWriter{objects: map[string][]byte{}}
+	client := &traceLLMClient{
+		trace: llm.Trace{RequestBody: requestBody, ResponseBody: responseBody, HTTPStatus: http.StatusOK},
+		err:   &llm.ModelOutputError{Message: "LLM returned invalid JSON content"},
+	}
+	acts := New(Dependencies{Artifacts: writer, LLM: client, ModelProfile: "model"})
+	_, err := acts.AnalyzeDimensions(context.Background(), AnalyzeDimensionsInput{
+		ChecklistID: "checklist-exact",
+		Task:        "task",
+		Context:     "context",
+		Limits:      evalcore.DefaultChecklistLimits(),
+	})
+	assertTemporalApplicationError(t, err, ErrorClassModelOutputInvalid, true)
+	requestKey := artifacts.ChecklistLLMRequestKey("checklist-exact", artifacts.PromptDimensionAnalysis, 1)
+	responseKey := artifacts.ChecklistLLMResponseKey("checklist-exact", artifacts.PromptDimensionAnalysis, 1)
+	if !bytes.Equal(writer.objects[requestKey], requestBody) || !bytes.Equal(writer.objects[responseKey], responseBody) {
+		t.Fatalf("activity traces changed bytes: %#v", writer.objects)
+	}
+	var appErr *temporal.ApplicationError
+	if !errors.As(err, &appErr) {
+		t.Fatalf("error = %T", err)
+	}
+	var details failure.Details
+	if decodeErr := appErr.Details(&details); decodeErr != nil {
+		t.Fatalf("decode failure details error = %v", decodeErr)
+	}
+	if !slices.Equal(details.ArtifactReferences, []string{requestKey, responseKey}) || strings.Contains(details.Message, rawSentinel) {
+		t.Fatalf("failure details = %#v", details)
+	}
+}
+
+type traceLLMClient struct {
+	trace llm.Trace
+	err   error
+}
+
+func (c *traceLLMClient) GenerateJSON(ctx context.Context, req llm.GenerateRequest, out any) (llm.Trace, error) {
+	return c.trace, c.err
+}
+
 func TestLLMActivitiesFailureSideEffects(t *testing.T) {
 	limits := evalcore.DefaultChecklistLimits()
 	dimension := evalcore.Dimension{ID: "d1", Ordinal: 1, Name: "Correctness", Rubric: "Check correctness.", Rationale: "Core."}
@@ -125,18 +172,18 @@ func TestLLMActivitiesFailureSideEffects(t *testing.T) {
 		{ID: "c2", DimensionID: "d1", Ordinal: 2, Rationale: "r2", Question: "Q2?"},
 	}
 
-	t.Run("request artifact failure prevents llm call", func(t *testing.T) {
-		requestKey := artifacts.ChecklistLLMRequestKey("checklist-1", artifacts.PromptDimensionAnalysis)
+	t.Run("request artifact failure is retryable after transport completes", func(t *testing.T) {
+		requestKey := artifacts.ChecklistLLMRequestKey("checklist-1", artifacts.PromptDimensionAnalysis, 1)
 		writer := &fakeArtifactWriter{objects: map[string][]byte{}, failWrites: map[string]error{requestKey: errors.New("garage unavailable")}}
 		client := &fakeLLMClient{}
 		acts := New(Dependencies{Artifacts: writer, LLM: client, ModelProfile: "model"})
 
 		_, err := acts.AnalyzeDimensions(context.Background(), AnalyzeDimensionsInput{ChecklistID: "checklist-1", Task: "task", Context: "context", Limits: limits})
 		assertTemporalApplicationError(t, err, ErrorClassInfraRetryable, false)
-		if len(client.requests) != 0 {
-			t.Fatalf("LLM was called after request artifact failure: %#v", client.requests)
+		if len(client.requests) != 1 {
+			t.Fatalf("LLM calls = %#v, want completed transport", client.requests)
 		}
-		assertObjectMissing(t, writer, artifacts.ChecklistLLMResponseKey("checklist-1", artifacts.PromptDimensionAnalysis))
+		assertObjectWritten(t, writer, artifacts.ChecklistLLMResponseKey("checklist-1", artifacts.PromptDimensionAnalysis, 1))
 	})
 
 	t.Run("llm model output failure leaves only request artifact", func(t *testing.T) {
@@ -146,8 +193,8 @@ func TestLLMActivitiesFailureSideEffects(t *testing.T) {
 
 		_, err := acts.AnalyzeDimensions(context.Background(), AnalyzeDimensionsInput{ChecklistID: "checklist-1", Task: "task", Context: "context", Limits: limits})
 		assertTemporalApplicationError(t, err, ErrorClassModelOutputInvalid, true)
-		assertObjectWritten(t, writer, artifacts.ChecklistLLMRequestKey("checklist-1", artifacts.PromptDimensionAnalysis))
-		assertObjectMissing(t, writer, artifacts.ChecklistLLMResponseKey("checklist-1", artifacts.PromptDimensionAnalysis))
+		assertObjectWritten(t, writer, artifacts.ChecklistLLMRequestKey("checklist-1", artifacts.PromptDimensionAnalysis, 1))
+		assertObjectMissing(t, writer, artifacts.ChecklistLLMResponseKey("checklist-1", artifacts.PromptDimensionAnalysis, 1))
 	})
 
 	t.Run("semantic validation failure keeps llm response artifact", func(t *testing.T) {
@@ -161,19 +208,19 @@ func TestLLMActivitiesFailureSideEffects(t *testing.T) {
 
 		_, err := acts.AssignWeights(context.Background(), AssignWeightsInput{ChecklistID: "checklist-1", Task: "task", Context: "context", CandidateQuestions: candidates, Limits: limits})
 		assertTemporalApplicationError(t, err, ErrorClassModelOutputInvalid, true)
-		assertObjectWritten(t, writer, artifacts.ChecklistLLMRequestKey("checklist-1", artifacts.PromptWeightAssignment))
-		assertObjectWritten(t, writer, artifacts.ChecklistLLMResponseKey("checklist-1", artifacts.PromptWeightAssignment))
+		assertObjectWritten(t, writer, artifacts.ChecklistLLMRequestKey("checklist-1", artifacts.PromptWeightAssignment, 1))
+		assertObjectWritten(t, writer, artifacts.ChecklistLLMResponseKey("checklist-1", artifacts.PromptWeightAssignment, 1))
 	})
 
 	t.Run("response artifact failure is retryable", func(t *testing.T) {
-		responseKey := artifacts.ChecklistLLMResponseKey("checklist-1", artifacts.PromptDimensionAnalysis)
+		responseKey := artifacts.ChecklistLLMResponseKey("checklist-1", artifacts.PromptDimensionAnalysis, 1)
 		writer := &fakeArtifactWriter{objects: map[string][]byte{}, failWrites: map[string]error{responseKey: errors.New("garage unavailable")}}
 		client := &fakeLLMClient{}
 		acts := New(Dependencies{Artifacts: writer, LLM: client, ModelProfile: "model"})
 
 		_, err := acts.AnalyzeDimensions(context.Background(), AnalyzeDimensionsInput{ChecklistID: "checklist-1", Task: "task", Context: "context", Limits: limits})
 		assertTemporalApplicationError(t, err, ErrorClassInfraRetryable, false)
-		assertObjectWritten(t, writer, artifacts.ChecklistLLMRequestKey("checklist-1", artifacts.PromptDimensionAnalysis))
+		assertObjectWritten(t, writer, artifacts.ChecklistLLMRequestKey("checklist-1", artifacts.PromptDimensionAnalysis, 1))
 		assertObjectMissing(t, writer, responseKey)
 	})
 
@@ -188,20 +235,20 @@ func TestLLMActivitiesFailureSideEffects(t *testing.T) {
 
 		_, err := acts.JudgeAnswer(context.Background(), JudgeAnswerInput{
 			EvaluationID: "evaluation-1",
+			RunIndex:     1,
 			Task:         "task",
 			Context:      "context",
 			ModelAnswer:  "answer",
 			Questions:    []evalcore.FinalQuestion{{ID: "q1", Ordinal: 1, DimensionID: "d1", SourceCandidateID: "c1", Rationale: "r", Question: "Q1?"}},
 		})
 		assertTemporalApplicationError(t, err, ErrorClassModelOutputInvalid, true)
-		assertObjectWritten(t, writer, artifacts.EvaluationLLMRequestKey("evaluation-1", artifacts.PromptBinaryJudging))
-		assertObjectWritten(t, writer, artifacts.EvaluationLLMResponseKey("evaluation-1", artifacts.PromptBinaryJudging))
+		assertObjectWritten(t, writer, artifacts.EvaluationLLMRequestKey("evaluation-1", artifacts.PromptBinaryJudging+"/run-1", 1))
+		assertObjectWritten(t, writer, artifacts.EvaluationLLMResponseKey("evaluation-1", artifacts.PromptBinaryJudging+"/run-1", 1))
 	})
 
 	_ = dimension
 }
 
-// TEST-008
 func TestPostgresBackedActivities(t *testing.T) {
 	t.Run("load running checklist does not read artifacts", func(t *testing.T) {
 		writer := &fakeArtifactWriter{objects: map[string][]byte{}, failReads: map[string]error{"unexpected": errors.New("unexpected read")}}
@@ -322,17 +369,23 @@ type fakeLLMClient struct {
 	err      error
 }
 
-func (c *fakeLLMClient) GenerateJSON(ctx context.Context, req llm.GenerateRequest, out any) error {
+func (c *fakeLLMClient) GenerateJSON(ctx context.Context, req llm.GenerateRequest, out any) (llm.Trace, error) {
 	if c.requests == nil {
 		c.requests = map[string]llm.GenerateRequest{}
 	}
 	c.requests[req.PromptName] = req
+	requestBody, _ := json.Marshal(req)
+	trace := llm.Trace{RequestBody: requestBody}
 	if c.err != nil {
-		return c.err
+		return trace, c.err
 	}
 	if output := c.outputs[req.PromptName]; output != nil {
 		output(out)
-		return nil
+		responseBody, _ := json.Marshal(out)
+		trace.ResponseBody = responseBody
+		trace.ResponseBytesRead = len(responseBody)
+		trace.HTTPStatus = http.StatusOK
+		return trace, nil
 	}
 	switch req.PromptName {
 	case artifacts.PromptDimensionAnalysis:
@@ -363,7 +416,11 @@ func (c *fakeLLMClient) GenerateJSON(ctx context.Context, req llm.GenerateReques
 		t := ctx.Value(testingKey{}).(*testing.T)
 		t.Fatalf("unexpected prompt %s", req.PromptName)
 	}
-	return nil
+	responseBody, _ := json.Marshal(out)
+	trace.ResponseBody = responseBody
+	trace.ResponseBytesRead = len(responseBody)
+	trace.HTTPStatus = http.StatusOK
+	return trace, nil
 }
 
 type testingKey struct{}
@@ -381,19 +438,19 @@ func (s *fakeActivityStore) GetChecklist(ctx context.Context, checklistID string
 	return s.checklist, nil
 }
 
-func (s *fakeActivityStore) SucceedChecklist(ctx context.Context, checklistID string, dimensions []evalcore.Dimension, candidates []evalcore.CandidateQuestion, weights []evalcore.Weight, questions []evalcore.FinalQuestion) error {
+func (s *fakeActivityStore) SucceedChecklist(ctx context.Context, checklistID string, dimensions []evalcore.Dimension, candidates []evalcore.CandidateQuestion, weights []evalcore.Weight, questions []evalcore.FinalQuestion, limits evalcore.ChecklistLimits) error {
 	return s.terminalErr
 }
 
-func (s *fakeActivityStore) FailChecklist(ctx context.Context, checklistID, message string) error {
+func (s *fakeActivityStore) FailChecklist(ctx context.Context, checklistID string, details failure.Details) error {
 	return s.terminalErr
 }
 
-func (s *fakeActivityStore) SucceedEvaluation(ctx context.Context, evaluationID, checklistID string, judgments []evalcore.Judgment, score evalcore.ScoreResult) error {
+func (s *fakeActivityStore) SucceedEvaluation(ctx context.Context, evaluationID, checklistID string, runJudgments []evalcore.RunJudgment, score evalcore.ScoreResult) error {
 	return s.terminalErr
 }
 
-func (s *fakeActivityStore) FailEvaluation(ctx context.Context, evaluationID, checklistID, message string) error {
+func (s *fakeActivityStore) FailEvaluation(ctx context.Context, evaluationID, checklistID string, details failure.Details) error {
 	return s.terminalErr
 }
 

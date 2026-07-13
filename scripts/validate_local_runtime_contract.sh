@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# TEST-001
-
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
@@ -23,7 +21,6 @@ for script in \
   scripts/live_curl_example.sh \
   scripts/validate_litellm_responses.sh \
   scripts/validate_docs_curl.sh \
-  scripts/validate_traceability.sh \
   scripts/validate_smoke_invariants.sh \
   scripts/docker-compose-local.sh \
   scripts/wait-for-tcp.sh; do

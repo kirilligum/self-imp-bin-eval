@@ -2,11 +2,12 @@ package activities
 
 import (
 	"context"
-	"encoding/json"
+	"strconv"
 
 	"github.com/kirilligum/self-imp-bin-eval/internal/artifacts"
 	"github.com/kirilligum/self-imp-bin-eval/internal/db"
 	"github.com/kirilligum/self-imp-bin-eval/internal/evalcore"
+	"github.com/kirilligum/self-imp-bin-eval/internal/failure"
 	"github.com/kirilligum/self-imp-bin-eval/internal/llm"
 )
 
@@ -34,10 +35,10 @@ type Dependencies struct {
 
 type Store interface {
 	GetChecklist(ctx context.Context, checklistID string) (db.Checklist, error)
-	SucceedChecklist(ctx context.Context, checklistID string, dimensions []evalcore.Dimension, candidates []evalcore.CandidateQuestion, weights []evalcore.Weight, questions []evalcore.FinalQuestion) error
-	FailChecklist(ctx context.Context, checklistID, message string) error
-	SucceedEvaluation(ctx context.Context, evaluationID, checklistID string, judgments []evalcore.Judgment, score evalcore.ScoreResult) error
-	FailEvaluation(ctx context.Context, evaluationID, checklistID, message string) error
+	SucceedChecklist(ctx context.Context, checklistID string, dimensions []evalcore.Dimension, candidates []evalcore.CandidateQuestion, weights []evalcore.Weight, questions []evalcore.FinalQuestion, limits evalcore.ChecklistLimits) error
+	FailChecklist(ctx context.Context, checklistID string, details failure.Details) error
+	SucceedEvaluation(ctx context.Context, evaluationID, checklistID string, runJudgments []evalcore.RunJudgment, score evalcore.ScoreResult) error
+	FailEvaluation(ctx context.Context, evaluationID, checklistID string, details failure.Details) error
 }
 
 type Activities struct {
@@ -117,6 +118,7 @@ type SplitQuestionResult struct {
 
 type JudgeAnswerInput struct {
 	EvaluationID string
+	RunIndex     int
 	Task         string
 	Context      string
 	ModelAnswer  string
@@ -143,39 +145,40 @@ type SucceedChecklistInput struct {
 	CandidateQuestions []evalcore.CandidateQuestion
 	Weights            []evalcore.Weight
 	Questions          []evalcore.FinalQuestion
+	Limits             evalcore.ChecklistLimits
 }
 
 type FailChecklistInput struct {
-	ChecklistID  string
-	ErrorMessage string
+	ChecklistID string
+	Failure     failure.Details
 }
 
 type SucceedEvaluationInput struct {
 	EvaluationID string
 	ChecklistID  string
-	Judgments    []evalcore.Judgment
+	RunJudgments []evalcore.RunJudgment
 	Score        evalcore.ScoreResult
 }
 
 type FailEvaluationInput struct {
 	EvaluationID string
 	ChecklistID  string
-	ErrorMessage string
+	Failure      failure.Details
 }
 
 func (a *Activities) WriteChecklistInputs(ctx context.Context, in WriteChecklistInputsInput) error {
 	if err := a.artifacts.Write(ctx, artifacts.ChecklistTaskKey(in.ChecklistID), []byte(in.Task)); err != nil {
-		return ToTemporalError(err)
+		return ToTemporalError(ctx, err)
 	}
 	if err := a.artifacts.Write(ctx, artifacts.ChecklistContextKey(in.ChecklistID), []byte(in.Context)); err != nil {
-		return ToTemporalError(err)
+		return ToTemporalError(ctx, err)
 	}
 	return nil
 }
 
 func (a *Activities) WriteEvaluationInput(ctx context.Context, in WriteEvaluationInputInput) error {
 	if err := a.artifacts.Write(ctx, artifacts.EvaluationAnswerKey(in.EvaluationID), []byte(in.ModelAnswer)); err != nil {
-		return ToTemporalError(err)
+		return ToTemporalError(ctx, err)
 	}
 	return nil
 }
@@ -184,15 +187,16 @@ func (a *Activities) AnalyzeDimensions(ctx context.Context, in AnalyzeDimensions
 	limits := in.Limits.WithDefaults()
 	req := llm.BuildDimensionAnalysisRequest(in.Task, in.Context, a.modelProfile, limits)
 	var out llm.DimensionAnalysisOutput
-	if err := a.runChecklistLLM(ctx, in.ChecklistID, artifacts.PromptDimensionAnalysis, req, &out); err != nil {
+	references, err := a.runChecklistLLM(ctx, in.ChecklistID, artifacts.PromptDimensionAnalysis, req, &out)
+	if err != nil {
 		return AnalyzeDimensionsResult{}, err
 	}
 	if err := evalcore.ValidateDimensionGeneration(out.Dimensions, limits); err != nil {
-		return AnalyzeDimensionsResult{}, ToTemporalError(err)
+		return AnalyzeDimensionsResult{}, ToTemporalError(ctx, err, references...)
 	}
 	dimensions := evalcore.AssignDimensionIDs(out.Dimensions)
 	if err := evalcore.ValidateDimensions(dimensions, limits); err != nil {
-		return AnalyzeDimensionsResult{}, ToTemporalError(err)
+		return AnalyzeDimensionsResult{}, ToTemporalError(ctx, err, references...)
 	}
 	return AnalyzeDimensionsResult{Dimensions: dimensions}, nil
 }
@@ -201,11 +205,12 @@ func (a *Activities) GenerateQuestionsForDimension(ctx context.Context, in Gener
 	limits := in.Limits.WithDefaults()
 	req := llm.BuildQuestionGenerationRequest(in.Task, in.Context, a.modelProfile, in.Dimension, limits)
 	var out llm.QuestionGenerationOutput
-	if err := a.runChecklistLLM(ctx, in.ChecklistID, artifacts.PromptQuestionGeneration+"/"+in.Dimension.ID, req, &out); err != nil {
+	references, err := a.runChecklistLLM(ctx, in.ChecklistID, artifacts.PromptQuestionGeneration+"/"+in.Dimension.ID, req, &out)
+	if err != nil {
 		return GenerateQuestionsForDimensionResult{}, err
 	}
 	if err := evalcore.ValidateQuestionGeneration(out.Questions, limits); err != nil {
-		return GenerateQuestionsForDimensionResult{}, ToTemporalError(err)
+		return GenerateQuestionsForDimensionResult{}, ToTemporalError(ctx, err, references...)
 	}
 	return GenerateQuestionsForDimensionResult{Questions: out.Questions}, nil
 }
@@ -214,11 +219,12 @@ func (a *Activities) AssignWeights(ctx context.Context, in AssignWeightsInput) (
 	limits := in.Limits.WithDefaults()
 	req := llm.BuildWeightAssignmentRequest(in.Task, in.Context, a.modelProfile, in.CandidateQuestions, limits)
 	var out llm.WeightAssignmentOutput
-	if err := a.runChecklistLLM(ctx, in.ChecklistID, artifacts.PromptWeightAssignment, req, &out); err != nil {
+	references, err := a.runChecklistLLM(ctx, in.ChecklistID, artifacts.PromptWeightAssignment, req, &out)
+	if err != nil {
 		return AssignWeightsResult{}, err
 	}
 	if err := evalcore.ValidateWeights(in.CandidateQuestions, out.Weights, limits); err != nil {
-		return AssignWeightsResult{}, ToTemporalError(err)
+		return AssignWeightsResult{}, ToTemporalError(ctx, err, references...)
 	}
 	return AssignWeightsResult{Weights: out.Weights}, nil
 }
@@ -227,66 +233,81 @@ func (a *Activities) SplitQuestion(ctx context.Context, in SplitQuestionInput) (
 	limits := in.Limits.WithDefaults()
 	req := llm.BuildQuestionSplittingRequest(in.Task, in.Context, a.modelProfile, in.CandidateQuestion, in.Weight, limits)
 	var out llm.QuestionSplittingOutput
-	if err := a.runChecklistLLM(ctx, in.ChecklistID, artifacts.PromptQuestionSplitting+"/"+in.CandidateQuestion.ID, req, &out); err != nil {
+	references, err := a.runChecklistLLM(ctx, in.ChecklistID, artifacts.PromptQuestionSplitting+"/"+in.CandidateQuestion.ID, req, &out)
+	if err != nil {
 		return SplitQuestionResult{}, err
 	}
 	split := evalcore.SplitQuestions{CandidateQuestionID: in.CandidateQuestion.ID, Questions: out.Questions}
 	if err := evalcore.ValidateSplitQuestions(split, in.Weight.Weight); err != nil {
-		return SplitQuestionResult{}, ToTemporalError(err)
+		return SplitQuestionResult{}, ToTemporalError(ctx, err, references...)
 	}
 	return SplitQuestionResult{Split: split}, nil
 }
 
 func (a *Activities) JudgeAnswer(ctx context.Context, in JudgeAnswerInput) (JudgeAnswerResult, error) {
+	if in.RunIndex <= 0 {
+		return JudgeAnswerResult{}, ToTemporalError(ctx, &evalcore.SemanticError{Code: evalcore.CodeInvalidJudgments, Message: "run_index must be positive"})
+	}
 	req := llm.BuildBinaryJudgingRequest(in.Task, in.Context, in.ModelAnswer, a.modelProfile, in.Questions)
 	var out llm.BinaryJudgingOutput
-	if err := a.runEvaluationLLM(ctx, in.EvaluationID, artifacts.PromptBinaryJudging, req, &out); err != nil {
+	prompt := artifacts.PromptBinaryJudging + "/run-" + strconv.Itoa(in.RunIndex)
+	references, err := a.runEvaluationLLM(ctx, in.EvaluationID, prompt, req, &out)
+	if err != nil {
 		return JudgeAnswerResult{}, err
 	}
 	if err := evalcore.ValidateJudgments(in.Questions, out.Judgments); err != nil {
-		return JudgeAnswerResult{}, ToTemporalError(err)
+		return JudgeAnswerResult{}, ToTemporalError(ctx, err, references...)
 	}
 	return JudgeAnswerResult{Judgments: out.Judgments}, nil
 }
 
-func (a *Activities) runChecklistLLM(ctx context.Context, checklistID, prompt string, req llm.GenerateRequest, out any) error {
-	reqBytes, err := json.Marshal(req)
-	if err != nil {
-		return ToTemporalError(err)
-	}
-	if err := a.artifacts.Write(ctx, artifacts.ChecklistLLMRequestKey(checklistID, prompt), reqBytes); err != nil {
-		return ToTemporalError(err)
-	}
-	if err := a.llm.GenerateJSON(ctx, req, out); err != nil {
-		return ToTemporalError(err)
-	}
-	respBytes, err := json.Marshal(out)
-	if err != nil {
-		return ToTemporalError(err)
-	}
-	if err := a.artifacts.Write(ctx, artifacts.ChecklistLLMResponseKey(checklistID, prompt), respBytes); err != nil {
-		return ToTemporalError(err)
-	}
-	return nil
+func (a *Activities) runChecklistLLM(ctx context.Context, checklistID, prompt string, req llm.GenerateRequest, out any) ([]string, error) {
+	attempt := activityAttempt(ctx)
+	return a.runLLM(
+		ctx,
+		req,
+		out,
+		artifacts.ChecklistLLMRequestKey(checklistID, prompt, attempt),
+		artifacts.ChecklistLLMResponseKey(checklistID, prompt, attempt),
+	)
 }
 
-func (a *Activities) runEvaluationLLM(ctx context.Context, evaluationID, prompt string, req llm.GenerateRequest, out any) error {
-	reqBytes, err := json.Marshal(req)
-	if err != nil {
-		return ToTemporalError(err)
+func (a *Activities) runEvaluationLLM(ctx context.Context, evaluationID, prompt string, req llm.GenerateRequest, out any) ([]string, error) {
+	attempt := activityAttempt(ctx)
+	return a.runLLM(
+		ctx,
+		req,
+		out,
+		artifacts.EvaluationLLMRequestKey(evaluationID, prompt, attempt),
+		artifacts.EvaluationLLMResponseKey(evaluationID, prompt, attempt),
+	)
+}
+
+func (a *Activities) runLLM(ctx context.Context, req llm.GenerateRequest, out any, requestKey, responseKey string) ([]string, error) {
+	trace, llmErr := a.llm.GenerateJSON(ctx, req, out)
+	references := make([]string, 0, 2)
+	var artifactErr error
+	if len(trace.RequestBody) > 0 {
+		if err := a.artifacts.Write(ctx, requestKey, trace.RequestBody); err != nil {
+			artifactErr = err
+		} else {
+			references = append(references, requestKey)
+		}
 	}
-	if err := a.artifacts.Write(ctx, artifacts.EvaluationLLMRequestKey(evaluationID, prompt), reqBytes); err != nil {
-		return ToTemporalError(err)
+	if trace.HTTPStatus != 0 {
+		if err := a.artifacts.Write(ctx, responseKey, trace.ResponseBody); err != nil {
+			if artifactErr == nil {
+				artifactErr = err
+			}
+		} else {
+			references = append(references, responseKey)
+		}
 	}
-	if err := a.llm.GenerateJSON(ctx, req, out); err != nil {
-		return ToTemporalError(err)
+	if artifactErr != nil {
+		return references, ToTemporalError(ctx, artifactErr, references...)
 	}
-	respBytes, err := json.Marshal(out)
-	if err != nil {
-		return ToTemporalError(err)
+	if llmErr != nil {
+		return references, ToTemporalError(ctx, llmErr, references...)
 	}
-	if err := a.artifacts.Write(ctx, artifacts.EvaluationLLMResponseKey(evaluationID, prompt), respBytes); err != nil {
-		return ToTemporalError(err)
-	}
-	return nil
+	return references, nil
 }

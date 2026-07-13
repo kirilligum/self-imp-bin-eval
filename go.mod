@@ -7,6 +7,7 @@ require (
 	github.com/minio/minio-go/v7 v7.2.1
 	github.com/stretchr/testify v1.11.1
 	go.temporal.io/sdk v1.46.0
+	go.yaml.in/yaml/v3 v3.0.4
 )
 
 require (
@@ -37,7 +38,6 @@ require (
 	github.com/tinylib/msgp v1.6.1 // indirect
 	github.com/zeebo/xxh3 v1.1.0 // indirect
 	go.temporal.io/api v1.63.0 // indirect
-	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	golang.org/x/crypto v0.51.0 // indirect
 	golang.org/x/net v0.55.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect

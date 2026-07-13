@@ -1,162 +1,280 @@
+version: 1
+
+requirements:
+  - REQ-001
+  - REQ-002
+  - REQ-003
+  - REQ-004
+  - REQ-005
+  - REQ-006
+  - REQ-007
+  - REQ-008
+  - REQ-009
+  - REQ-010
+  - REQ-011
+  - REQ-012
+  - REQ-013
+  - REQ-014
+  - REQ-020
+  - REQ-021
+  - REQ-022
+  - REQ-023
+  - REQ-024
+  - REQ-025
+  - REQ-030
+  - REQ-031
+  - REQ-032
+  - REQ-033
+  - REQ-034
+  - REQ-035
+  - REQ-036
+  - REQ-037
+  - REQ-040
+  - REQ-041
+  - REQ-042
+  - REQ-043
+  - REQ-044
+  - REQ-045
+  - REQ-046
+  - REQ-047
+  - REQ-048
+  - REQ-049
+  - REQ-050
+
+groups: [lint, build, unit, race, integration, e2e, live, focused, plan, publication]
+
 tests:
   - id: TEST-001
-    name: LLM schemas and local runtime contract
-    reqs: [REQ-020, REQ-044]
-    level: static-unit
-    files:
-      - internal/llm/schema_test.go
-      - scripts/validate_local_runtime_contract.sh
-    command: make lint && go test ./internal/llm -run TestRubricRefinementSchemasAndPrompts -count=1
-    evidence: test output plus static script output
+    name: Rubric refinement LLM contracts
+    requirements: [REQ-001, REQ-002, REQ-003, REQ-004, REQ-005, REQ-006, REQ-007, REQ-008, REQ-020, REQ-023]
+    groups: [focused]
+    files: [internal/llm/schema_test.go, internal/llm/prompts.go, internal/llm/schemas.go]
+    command: [go, test, ./internal/llm, -run, "^TestRubricRefinementSchemasAndPrompts$", -count=1]
+    discovery:
+      packages: [./internal/llm]
+      pattern: "^TestRubricRefinementSchemasAndPrompts$"
+    evidence: focused Go test output
+    timeout_seconds: 120
 
   - id: TEST-002
-    name: Evalcore checklist assembly and validation
-    reqs: [REQ-002, REQ-003, REQ-004, REQ-008, REQ-009]
-    level: unit
-    files:
-      - internal/evalcore/ids_test.go
-      - internal/evalcore/score_test.go
-      - internal/evalcore/validate_test.go
-      - scripts/validate_litellm_responses.sh
-    command: go test ./internal/evalcore -count=1
-    evidence: unit test output
+    name: Final checklist construction and equal scoring
+    requirements: [REQ-006, REQ-007, REQ-008, REQ-009, REQ-010, REQ-014, REQ-031, REQ-032, REQ-033, REQ-034, REQ-040, REQ-042, REQ-043, REQ-049]
+    groups: [focused]
+    files: [internal/evalcore/active.go, internal/evalcore/score.go, internal/evalcore/validate.go, internal/evalcore/validate_test.go]
+    command: [go, test, ./internal/evalcore, -count=1]
+    evidence: evalcore unit test output
+    timeout_seconds: 120
 
   - id: TEST-003
-    name: Local systemd install dry-run contract
-    reqs: [REQ-044]
-    level: static
-    files:
-      - scripts/install-local-systemd.sh
-    command: scripts/install-local-systemd.sh --dry-run
-    evidence: dry-run output
+    name: Postgres persistence and migrations
+    requirements: [REQ-013, REQ-030, REQ-031, REQ-032, REQ-033, REQ-034, REQ-036, REQ-047, REQ-048]
+    groups: [focused]
+    files: [internal/db/db_integration_test.go, internal/db/store.go, migrations]
+    command: [scripts/run_go_integration.sh, ./internal/db]
+    evidence: Postgres integration output
+    timeout_seconds: 300
 
   - id: TEST-004
-    name: Local status command contract
-    reqs: [REQ-044]
-    level: static
-    files:
-      - scripts/status-local.sh
-    command: scripts/status-local.sh --json
-    evidence: status JSON
+    name: Garage artifact persistence
+    requirements: [REQ-022, REQ-035, REQ-037, REQ-041]
+    groups: [focused]
+    files: [internal/artifacts/artifacts_integration_test.go, internal/artifacts/export.go, internal/artifacts/export_test.go, internal/artifacts/keys.go, internal/artifacts/writer.go]
+    command: [scripts/run_go_integration.sh, ./internal/artifacts]
+    evidence: Garage integration output
+    timeout_seconds: 300
 
   - id: TEST-005
-    name: Live curl workflow
-    reqs: [REQ-001, REQ-006, REQ-010, REQ-021]
-    level: live-e2e
-    files:
-      - scripts/live_curl_example.sh
-    command: make test-live-curl
-    evidence: debug/live-curl captures
+    name: LLM activities
+    requirements: [REQ-001, REQ-002, REQ-006, REQ-007, REQ-008, REQ-010, REQ-022, REQ-035, REQ-037, REQ-043]
+    groups: [focused]
+    files: [internal/activities/llm_test.go, internal/activities/llm.go]
+    command: [go, test, ./internal/activities, -run, "^TestLLMActivities$", -count=1]
+    discovery:
+      packages: [./internal/activities]
+      pattern: "^TestLLMActivities$"
+    evidence: focused activity test output
+    timeout_seconds: 120
+
+  - id: TEST-006
+    name: Temporal workflow DAG
+    requirements: [REQ-001, REQ-002, REQ-007, REQ-008, REQ-009, REQ-010, REQ-013, REQ-014, REQ-040, REQ-043, REQ-047, REQ-048, REQ-049]
+    groups: [focused]
+    files: [internal/workflows/create_checklist_test.go, internal/workflows/evaluate_answer_test.go]
+    command: [go, test, ./internal/workflows, -run, "^Test(CreateChecklist|EvaluateAnswer)Workflow", -count=1]
+    discovery:
+      packages: [./internal/workflows]
+      pattern: "^Test(CreateChecklist|EvaluateAnswer)Workflow"
+    evidence: focused Temporal workflow output
+    timeout_seconds: 120
 
   - id: TEST-007
-    name: LLM HTTP client and curl documentation contract
-    reqs: [REQ-020, REQ-021, REQ-040, REQ-041]
-    level: unit-static
-    files:
-      - internal/llm/client_test.go
-      - scripts/validate_docs_curl.sh
-    command: go test ./internal/llm -run TestGenerateJSONClient -count=1 && scripts/validate_docs_curl.sh
-    evidence: unit test output plus docs validator output
+    name: HTTP API contracts
+    requirements: [REQ-011, REQ-013, REQ-020, REQ-021, REQ-024, REQ-025, REQ-044, REQ-045, REQ-047, REQ-048]
+    groups: [focused]
+    files: [internal/api/api_test.go, internal/api/router.go]
+    command: [go, test, ./internal/api, -run, "^TestAPI", -count=1]
+    discovery:
+      packages: [./internal/api]
+      pattern: "^TestAPI"
+    evidence: focused API test output
+    timeout_seconds: 120
 
   - id: TEST-008
-    name: LLM activity payloads and artifact writes
-    reqs: [REQ-007, REQ-011, REQ-020, REQ-040]
-    level: unit
-    files:
-      - internal/activities/llm_test.go
-    command: go test ./internal/activities -run TestLLMActivities -count=1
-    evidence: unit test output
+    name: OpenAI-compatible full-stack curl smoke
+    requirements: [REQ-012, REQ-025, REQ-040, REQ-044, REQ-048, REQ-050]
+    groups: [e2e]
+    files: [scripts/run_e2e.sh, scripts/smoke_curl.sh, scripts/lib/http.sh, scripts/validate_smoke_invariants.sh, scripts/capture_artifacts.sh, internal/cmd/captureartifacts/main.go]
+    command: [scripts/run_e2e.sh]
+    evidence: debug/smoke captures and invariant report
+    timeout_seconds: 3600
 
   - id: TEST-009
-    name: Config and logging redaction
-    reqs: [REQ-041, REQ-042]
-    level: unit
-    files:
-      - internal/config/config_test.go
-      - internal/observability/log_test.go
-    command: go test ./internal/config ./internal/observability -count=1
-    evidence: unit test output
+    name: Live LiteLLM curl smoke
+    requirements: [REQ-012, REQ-025, REQ-044, REQ-048, REQ-050]
+    groups: [live]
+    files: [scripts/live_curl_example.sh, scripts/lib/http.sh, scripts/capture_artifacts.sh, docs/curl.md]
+    command: [scripts/live_curl_example.sh]
+    evidence: debug/live-curl captures and summary
+    timeout_seconds: 3600
 
   - id: TEST-010
-    name: Postgres checklist and evaluation persistence
-    reqs: [REQ-005, REQ-030, REQ-032]
-    level: integration
-    files:
-      - internal/db/db_integration_test.go
-    command: make test-integration
-    evidence: integration test output
+    name: Full integration regression
+    requirements: [REQ-030, REQ-031, REQ-032, REQ-033, REQ-034, REQ-035, REQ-036, REQ-037]
+    groups: [integration]
+    files: [internal/db/db_integration_test.go, internal/artifacts/artifacts_integration_test.go]
+    command: [scripts/run_go_integration.sh, ./internal/db, ./internal/artifacts]
+    evidence: combined persistence integration output
+    timeout_seconds: 600
 
   - id: TEST-011
-    name: Garage artifact persistence
-    reqs: [REQ-011, REQ-031, REQ-041]
-    level: integration
-    files:
-      - internal/artifacts/artifacts_integration_test.go
-    command: make test-integration
-    evidence: integration test output
+    name: Publication state
+    requirements: [REQ-044, REQ-050]
+    groups: [publication]
+    files: [scripts/verify_publication.sh]
+    command: [scripts/verify_publication.sh]
+    evidence: clean published commit and branch output
+    timeout_seconds: 60
 
-  - id: TEST-012
-    name: Temporal create/evaluate success workflows
-    reqs: [REQ-001, REQ-006, REQ-012]
-    level: unit
-    files:
-      - internal/workflows/create_checklist_test.go
-      - internal/workflows/evaluate_answer_test.go
-    command: go test ./internal/workflows -run TestCreateChecklistWorkflow -count=1
-    evidence: unit test output
+  - id: TEST-101
+    name: Canonical executable verification manifest
+    requirements: [REQ-046]
+    groups: [plan]
+    files: [docs/test-matrix.yml, internal/verification/manifest.go, internal/verification/manifest_test.go, internal/cmd/verifyplan/main.go]
+    command: [go, test, ./internal/verification, -run, "^TestManifest", -count=1]
+    discovery:
+      packages: [./internal/verification]
+      pattern: "^TestManifest"
+    evidence: manifest validation, discovery, and runner test output
+    timeout_seconds: 120
 
-  - id: TEST-013
-    name: HTTP API route and response contracts
-    reqs: [REQ-001, REQ-006, REQ-010, REQ-021, REQ-032]
-    level: unit
-    files:
-      - internal/api/api_test.go
-    command: go test ./internal/api -count=1
-    evidence: unit test output
+  - id: TEST-102
+    name: Compositional weights and effective limits
+    requirements: [REQ-004, REQ-006, REQ-007, REQ-014, REQ-040, REQ-049]
+    groups: [plan]
+    files: [internal/llm/client.go, internal/llm/schema_test.go, internal/evalcore/validate_test.go, internal/workflows/create_checklist_test.go, internal/workflows/options.go, internal/workflows/workflow_test.go]
+    command: [go, test, ./internal/llm, ./internal/evalcore, ./internal/workflows, -run, "^TestP06(CompositionalWeightsAndEffectiveLimits|ActivityRuntimeBudget)$", -count=1]
+    discovery:
+      packages: [./internal/llm, ./internal/evalcore, ./internal/workflows]
+      pattern: "^TestP06(CompositionalWeightsAndEffectiveLimits|ActivityRuntimeBudget)$"
+    evidence: prompt, domain, workflow, and runtime budget focused test output
+    timeout_seconds: 180
 
-  - id: TEST-018
-    name: Temporal retry classification
-    reqs: [REQ-040]
-    level: unit
-    files:
-      - internal/activities/retry_test.go
-    command: go test ./internal/activities -run TestRetryClassification -count=1
-    evidence: unit test output
+  - id: TEST-103
+    name: Structured terminal workflow failures
+    requirements: [REQ-024, REQ-036]
+    groups: [plan]
+    files: [internal/db/db_integration_test.go, internal/api/api_test.go, internal/workflows/workflow_test.go]
+    command: [scripts/run_go_integration.sh, ./internal/db, ./internal/api, ./internal/workflows, -run, "^TestP06StructuredWorkflowFailures$"]
+    discovery:
+      packages: [./internal/db, ./internal/api, ./internal/workflows]
+      pattern: "^TestP06StructuredWorkflowFailures$"
+      tags: [integration]
+    evidence: structured failure migration, store, API, and workflow output
+    timeout_seconds: 600
 
-  - id: TEST-019
-    name: Workflow failure persistence
-    reqs: [REQ-001, REQ-006, REQ-012, REQ-040]
-    level: unit
-    files:
-      - internal/workflows/create_checklist_test.go
-      - internal/workflows/evaluate_answer_test.go
-    command: go test ./internal/workflows -run 'Failure|Rejects|Invalid|Activity' -count=1
-    evidence: unit test output
+  - id: TEST-104
+    name: Temporal start and terminal idempotency
+    requirements: [REQ-047]
+    groups: [plan]
+    files: [internal/api/api_test.go, internal/db/db_integration_test.go, internal/workflows/workflow_test.go]
+    command: [scripts/run_go_integration.sh, ./internal/api, ./internal/db, ./internal/workflows, -run, "^TestP06TemporalIdempotency$"]
+    discovery:
+      packages: [./internal/api, ./internal/db, ./internal/workflows]
+      pattern: "^TestP06TemporalIdempotency$"
+      tags: [integration]
+    evidence: start-resolution and idempotent terminal output
+    timeout_seconds: 600
 
-  - id: TEST-020
-    name: Postgres terminal and constraint invariants
-    reqs: [REQ-005, REQ-030, REQ-032]
-    level: integration
-    files:
-      - internal/db/db_integration_test.go
-    command: make test-integration
-    evidence: integration test output
+  - id: TEST-105
+    name: Exact attempt-aware LLM artifacts
+    requirements: [REQ-035, REQ-037]
+    groups: [plan]
+    files: [internal/llm/client_test.go, internal/activities/llm_test.go, internal/artifacts/artifacts_integration_test.go]
+    command: [scripts/run_go_integration.sh, ./internal/llm, ./internal/activities, ./internal/artifacts, -run, "^TestP06ExactLLMArtifacts$"]
+    discovery:
+      packages: [./internal/llm, ./internal/activities, ./internal/artifacts]
+      pattern: "^TestP06ExactLLMArtifacts$"
+      tags: [integration]
+    evidence: exact transport and Garage round-trip output
+    timeout_seconds: 600
 
-  - id: TEST-021
-    name: Traceability matrix validation
-    reqs: [REQ-044]
-    level: static
-    files:
-      - docs/test-matrix.yml
-      - scripts/validate_traceability.sh
-    command: scripts/validate_traceability.sh
-    evidence: traceability validation output
+  - id: TEST-106
+    name: Request-level repeated evaluation
+    requirements: [REQ-013, REQ-021, REQ-048]
+    groups: [plan]
+    files: [internal/evalcore/score_test.go, internal/workflows/evaluate_answer_test.go, internal/api/api_test.go, internal/db/db_integration_test.go, docs/curl.md]
+    command: [scripts/run_go_integration.sh, ./internal/evalcore, ./internal/workflows, ./internal/api, ./internal/db, -run, "^TestP06RepeatedEvaluation$"]
+    discovery:
+      packages: [./internal/evalcore, ./internal/workflows, ./internal/api, ./internal/db]
+      pattern: "^TestP06RepeatedEvaluation$"
+      tags: [integration]
+    evidence: repetition policy, persistence, majority score, API, and curl output
+    timeout_seconds: 600
 
-  - id: TEST-022
-    name: Smoke capture invariant audit
-    reqs: [REQ-009, REQ-010, REQ-013, REQ-014]
-    level: e2e-audit
-    files:
-      - scripts/validate_smoke_invariants.sh
-    command: make test-e2e
-    evidence: debug/smoke/invariant_report.json
+  - id: TEST-107
+    name: Self-contained deterministic and live CI
+    requirements: [REQ-025, REQ-050]
+    groups: [plan]
+    files: [.dockerignore, internal/verification/manifest_test.go, .github/workflows/ci.yml, deploy/compose/docker-compose.yml, deploy/compose/Dockerfile, cmd/bin-eval-llm-fixture/main.go, cmd/bin-eval-llm-fixture/main_test.go, scripts/run_e2e.sh, scripts/smoke_curl.sh, scripts/lib/http.sh, scripts/capture_artifacts.sh, Makefile]
+    command: [go, test, ./internal/verification, -run, "^TestP06CIContract$", -count=1]
+    discovery:
+      packages: [./internal/verification]
+      pattern: "^TestP06CIContract$"
+    evidence: CI topology and boundary contract output
+    timeout_seconds: 120
+
+  - id: TEST-112
+    name: Canonical lint gate
+    requirements: [REQ-041, REQ-044, REQ-045, REQ-046]
+    groups: [lint]
+    files: [scripts/lint.sh, scripts/validate_local_runtime_contract.sh, scripts/validate_docs_curl.sh]
+    command: [scripts/lint.sh]
+    evidence: formatting, runtime, docs, and vet output
+    timeout_seconds: 300
+
+  - id: TEST-113
+    name: Canonical build gate
+    requirements: [REQ-042, REQ-044]
+    groups: [build]
+    files: [go.mod, cmd/bin-eval-api/main.go, cmd/bin-eval-worker/main.go]
+    command: [go, build, ./...]
+    evidence: complete Go build output
+    timeout_seconds: 300
+
+  - id: TEST-114
+    name: Canonical unit regression gate
+    requirements: [REQ-001, REQ-002, REQ-003, REQ-004, REQ-005, REQ-006, REQ-007, REQ-008, REQ-009, REQ-010, REQ-011, REQ-013, REQ-014, REQ-020, REQ-021, REQ-022, REQ-023, REQ-024, REQ-040, REQ-041, REQ-042, REQ-043, REQ-044, REQ-045, REQ-046, REQ-047, REQ-048, REQ-049]
+    groups: [unit]
+    files: [internal]
+    command: [go, test, ./..., -count=1]
+    evidence: complete unit regression output
+    timeout_seconds: 600
+
+  - id: TEST-115
+    name: Canonical race regression gate
+    requirements: [REQ-040, REQ-042, REQ-047, REQ-048]
+    groups: [race]
+    files: [internal]
+    command: [go, test, -race, ./..., -count=1]
+    evidence: complete race detector output
+    timeout_seconds: 1200

@@ -36,6 +36,9 @@ func TestP06CIContract(t *testing.T) {
 	require.Contains(t, string(workflowPayload), "runs-on: [self-hosted, linux, x64, bin-eval-live]")
 	require.Contains(t, string(workflowPayload), "docker network connect --alias bin-eval-litellm")
 	require.Contains(t, string(workflowPayload), "Stop live app containers")
+	runnerInstaller, err := os.ReadFile(filepath.Join(root, "scripts", "install-live-ci-runner.sh"))
+	require.NoError(t, err)
+	require.Contains(t, string(runnerInstaller), "ExecStart=/usr/bin/sg docker")
 
 	assertCIJob := func(t *testing.T, steps []struct {
 		Uses            string            `yaml:"uses"`

@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "${ROOT_DIR}/scripts/lib/local_env.sh"
-bin_eval_require_tools curl docker gh jq sha256sum systemctl tar
+bin_eval_require_tools curl docker gh jq sg sha256sum systemctl tar
 bin_eval_load_local_env "$ROOT_DIR"
 
 REPOSITORY="${BIN_EVAL_GITHUB_REPOSITORY:-kirilligum/self-imp-bin-eval}"
@@ -66,7 +66,7 @@ printf '%s\n' \
   '[Service]' \
   'Type=simple' \
   "WorkingDirectory=${RUNNER_ROOT}" \
-  "ExecStart=${RUNNER_ROOT}/run.sh" \
+  "ExecStart=/usr/bin/sg docker -c ${RUNNER_ROOT}/run.sh" \
   'Restart=always' \
   'RestartSec=5' \
   'KillMode=process' \
@@ -79,5 +79,6 @@ printf '%s' "$BIN_EVAL_LLM_API_KEY" | gh secret set BIN_EVAL_LLM_API_KEY --repo 
 gh variable set BIN_EVAL_LLM_CONTAINER --body "$LITELLM_CONTAINER" --repo "$REPOSITORY"
 
 systemctl --user daemon-reload
-systemctl --user enable --now "$UNIT_NAME"
+systemctl --user enable "$UNIT_NAME"
+systemctl --user restart "$UNIT_NAME"
 echo "live CI runner installed name=${RUNNER_NAME} label=${RUNNER_LABEL} service=${UNIT_NAME} secrets=redacted"

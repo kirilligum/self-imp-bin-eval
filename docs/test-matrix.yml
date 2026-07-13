@@ -235,7 +235,7 @@ tests:
     name: Self-contained deterministic and live CI
     requirements: [REQ-025, REQ-050]
     groups: [plan]
-    files: [.dockerignore, internal/verification/manifest_test.go, .github/workflows/ci.yml, deploy/compose/docker-compose.yml, deploy/compose/Dockerfile, cmd/bin-eval-llm-fixture/main.go, cmd/bin-eval-llm-fixture/main_test.go, scripts/run_e2e.sh, scripts/smoke_curl.sh, scripts/lib/http.sh, scripts/capture_artifacts.sh, Makefile]
+    files: [.dockerignore, internal/verification/manifest_test.go, .github/workflows/ci.yml, deploy/compose/docker-compose.yml, deploy/compose/Dockerfile, cmd/bin-eval-llm-fixture/main.go, cmd/bin-eval-llm-fixture/main_test.go, scripts/run_e2e.sh, scripts/smoke_curl.sh, scripts/lib/http.sh, scripts/capture_artifacts.sh, scripts/validate_local_runtime_contract.sh, scripts/validate_docs_curl.sh, Makefile]
     command: [go, test, ./internal/verification, -run, "^TestP06CIContract$", -count=1]
     discovery:
       packages: [./internal/verification]

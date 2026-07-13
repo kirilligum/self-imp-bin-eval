@@ -35,14 +35,14 @@ for pattern in \
   'checklist_pass_rate' \
   'failed_question_ids' \
   'scripts/live_curl_example.sh'; do
-  rg -n "$pattern" "$DOC" >/dev/null || fail "docs/curl.md missing pattern: $pattern"
+  grep -En "$pattern" "$DOC" >/dev/null || fail "docs/curl.md missing pattern: $pattern"
 done
 
-if rg -n 'Bearer [A-Za-z0-9._-]{20,}|sk-[A-Za-z0-9]' "$DOC" >/dev/null; then
+if grep -En 'Bearer [A-Za-z0-9._-]{20,}|sk-[A-Za-z0-9]' "$DOC" >/dev/null; then
   fail "docs/curl.md appears to contain a secret literal"
 fi
 
-if rg -n 'set status\b' "$DOC" >/dev/null; then
+if grep -En 'set status([[:space:]]|$)' "$DOC" >/dev/null; then
   fail "docs/curl.md uses Fish read-only variable name: status"
 fi
 

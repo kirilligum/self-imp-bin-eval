@@ -76,6 +76,11 @@ func TestP06CIContract(t *testing.T) {
 	dockerfilePayload, err := os.ReadFile(filepath.Join(root, "deploy", "compose", "Dockerfile"))
 	require.NoError(t, err)
 	require.Contains(t, string(dockerfilePayload), "COPY --from=build /src/migrations /migrations")
+	for _, path := range []string{"scripts/validate_local_runtime_contract.sh", "scripts/validate_docs_curl.sh"} {
+		payload, readErr := os.ReadFile(filepath.Join(root, path))
+		require.NoError(t, readErr)
+		require.NotContains(t, string(payload), "rg ", "%s depends on undeclared ripgrep tooling", path)
+	}
 
 	for _, path := range []string{"internal", "cmd/bin-eval-api", "cmd/bin-eval-worker"} {
 		err := filepath.WalkDir(filepath.Join(root, path), func(filePath string, entry os.DirEntry, err error) error {

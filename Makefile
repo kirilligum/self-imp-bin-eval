@@ -1,6 +1,6 @@
 SHELL := /usr/bin/env bash
 
-.PHONY: lint build test test-race test-integration test-e2e verify-plan verify-release install-local start-local stop-local status-local test-live-curl
+.PHONY: lint build test test-race test-integration test-e2e verify-plan verify-release install-local install-live-ci-runner start-local stop-local status-local test-live-curl
 
 lint:
 	go run ./internal/cmd/verifyplan --manifest docs/test-matrix.yml --groups lint
@@ -28,6 +28,9 @@ verify-release:
 
 install-local:
 	scripts/install-local-systemd.sh
+
+install-live-ci-runner:
+	scripts/install-live-ci-runner.sh
 
 start-local:
 	scripts/start-local.sh

@@ -33,6 +33,9 @@ func TestP06CIContract(t *testing.T) {
 	require.True(t, ok, "missing live CI job")
 	require.Contains(t, live.If, "refs/heads/master")
 	require.Contains(t, live.If, "release")
+	require.Contains(t, string(workflowPayload), "runs-on: [self-hosted, linux, x64, bin-eval-live]")
+	require.Contains(t, string(workflowPayload), "docker network connect --alias bin-eval-litellm")
+	require.Contains(t, string(workflowPayload), "Stop live app containers")
 
 	assertCIJob := func(t *testing.T, steps []struct {
 		Uses            string            `yaml:"uses"`

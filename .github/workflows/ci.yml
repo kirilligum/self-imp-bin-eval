@@ -53,7 +53,7 @@ jobs:
   live:
     if: github.event_name == 'release' || (github.event_name == 'push' && github.ref == 'refs/heads/master')
     needs: deterministic
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux, x64, bin-eval-live]
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
@@ -61,7 +61,18 @@ jobs:
         env:
           BIN_EVAL_LLM_BASE_URL: ${{ secrets.BIN_EVAL_LLM_BASE_URL }}
           BIN_EVAL_LLM_API_KEY: ${{ secrets.BIN_EVAL_LLM_API_KEY }}
-        run: test -n "$BIN_EVAL_LLM_BASE_URL" && test -n "$BIN_EVAL_LLM_API_KEY"
+          BIN_EVAL_LLM_CONTAINER: ${{ vars.BIN_EVAL_LLM_CONTAINER }}
+        run: test -n "$BIN_EVAL_LLM_BASE_URL" && test -n "$BIN_EVAL_LLM_API_KEY" && test -n "$BIN_EVAL_LLM_CONTAINER"
+      - name: Attach private LiteLLM endpoint
+        env:
+          BIN_EVAL_LLM_CONTAINER: ${{ vars.BIN_EVAL_LLM_CONTAINER }}
+        run: |
+          docker compose --env-file deploy/compose/.env.example -f deploy/compose/docker-compose.yml up -d postgres temporal garage
+          network="$(docker network ls --filter label=com.docker.compose.project=compose --filter label=com.docker.compose.network=default --format '{{.Name}}')"
+          test -n "$network"
+          if ! docker inspect "$BIN_EVAL_LLM_CONTAINER" --format '{{json .NetworkSettings.Networks}}' | jq -e --arg network "$network" 'has($network)' >/dev/null; then
+            docker network connect --alias bin-eval-litellm "$network" "$BIN_EVAL_LLM_CONTAINER"
+          fi
       - name: Start live full stack
         env:
           BIN_EVAL_LLM_BASE_URL: ${{ secrets.BIN_EVAL_LLM_BASE_URL }}
@@ -87,3 +98,6 @@ jobs:
         with:
           name: live-${{ github.sha }}
           path: debug/
+      - name: Stop live app containers
+        if: always()
+        run: docker compose --env-file deploy/compose/.env.example -f deploy/compose/docker-compose.yml --profile app stop api worker && docker compose --env-file deploy/compose/.env.example -f deploy/compose/docker-compose.yml --profile app rm -f api worker

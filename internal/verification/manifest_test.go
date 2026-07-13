@@ -49,7 +49,7 @@ func TestP06CIContract(t *testing.T) {
 	}, endpointFragment string) string {
 		t.Helper()
 		var allRuns strings.Builder
-		var endpointFound bool
+		var endpointFound, externalStackFound bool
 		for _, step := range steps {
 			require.False(t, step.ContinueOnError)
 			allRuns.WriteString(step.Run)
@@ -57,10 +57,13 @@ func TestP06CIContract(t *testing.T) {
 			if strings.Contains(step.Env["BIN_EVAL_LLM_BASE_URL"], endpointFragment) {
 				endpointFound = true
 			}
+			if step.Env["BIN_EVAL_EXTERNAL_STACK"] == "true" {
+				externalStackFound = true
+			}
 		}
 		require.True(t, endpointFound, "job does not configure expected LLM endpoint class")
-		require.Contains(t, allRuns.String(), "scripts/run_e2e.sh")
-		require.Contains(t, allRuns.String(), "BIN_EVAL_EXTERNAL_STACK=true")
+		require.True(t, externalStackFound, "job does not configure external stack execution")
+		require.Contains(t, allRuns.String(), "make test-e2e")
 		return allRuns.String()
 	}
 	deterministicRuns := assertCIJob(t, deterministic.Steps, "llm-fixture")
@@ -100,6 +103,56 @@ func TestP06CIContract(t *testing.T) {
 			return nil
 		})
 		require.NoError(t, err)
+	}
+}
+
+func TestP07CanonicalCurlRunner(t *testing.T) {
+	root := repositoryRoot(t)
+	manifest, err := Load(filepath.Join(root, "docs", "test-matrix.yml"))
+	require.NoError(t, err)
+
+	var curlTest *Test
+	for index := range manifest.Tests {
+		test := &manifest.Tests[index]
+		require.NotEqual(t, "TEST-009", test.ID, "duplicate live curl manifest entry must be removed")
+		if test.ID == "TEST-008" {
+			curlTest = test
+		}
+	}
+	require.NotNil(t, curlTest, "TEST-008 must own curl verification")
+	require.Equal(t, []string{"scripts/run_e2e.sh"}, curlTest.Command)
+	require.ElementsMatch(t, []string{"e2e", "live"}, curlTest.Groups)
+
+	_, err = os.Stat(filepath.Join(root, "scripts", "live_curl_example.sh"))
+	require.ErrorIs(t, err, os.ErrNotExist, "duplicate live curl runner must be deleted")
+
+	makefile := readRepositoryFile(t, root, "Makefile")
+	require.Contains(t, makefile, "test-e2e:\n\tgo run ./internal/cmd/verifyplan --manifest docs/test-matrix.yml --groups e2e")
+	require.Contains(t, makefile, "test-live-curl:\n\tBIN_EVAL_EXTERNAL_STACK=true BIN_EVAL_LOAD_LOCAL_ENV=true BIN_EVAL_DEBUG_DIR=debug/live-curl go run ./internal/cmd/verifyplan --manifest docs/test-matrix.yml --groups live")
+
+	workflow := readRepositoryFile(t, root, ".github/workflows/ci.yml")
+	require.Equal(t, 2, strings.Count(workflow, "make test-e2e"), "both CI curl jobs must select TEST-008 through Make")
+	require.NotContains(t, workflow, "scripts/run_e2e.sh")
+
+	runner := readRepositoryFile(t, root, "scripts/run_e2e.sh")
+	require.Contains(t, runner, "bin_eval_load_local_env \"$ROOT_DIR\"")
+	require.Contains(t, runner, "BIN_EVAL_LOAD_LOCAL_ENV")
+	smoke := readRepositoryFile(t, root, "scripts/smoke_curl.sh")
+	require.Contains(t, smoke, "BIN_EVAL_DEBUG_DIR")
+	require.Contains(t, smoke, "BIN_EVAL_EXTERNAL_STACK")
+
+	docs := readRepositoryFile(t, root, "docs/curl.md")
+	require.NotContains(t, docs, "scripts/live_curl_example.sh")
+	require.Contains(t, docs, "make test-live-curl")
+
+	entries, err := os.ReadDir(filepath.Join(root, "scripts"))
+	require.NoError(t, err)
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".sh" || entry.Name() == "smoke_curl.sh" {
+			continue
+		}
+		payload := readRepositoryFile(t, root, filepath.Join("scripts", entry.Name()))
+		require.NotContains(t, payload, "bin_eval_post_json", "%s duplicates the executable curl workflow", entry.Name())
 	}
 }
 
@@ -253,6 +306,13 @@ func validManifest() Manifest {
 			TimeoutSeconds: 120,
 		}},
 	}
+}
+
+func readRepositoryFile(t *testing.T, root, path string) string {
+	t.Helper()
+	payload, err := os.ReadFile(filepath.Join(root, path))
+	require.NoError(t, err)
+	return string(payload)
 }
 
 func repositoryRoot(t *testing.T) string {

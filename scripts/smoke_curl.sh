@@ -6,7 +6,7 @@ cd "$ROOT_DIR"
 source scripts/lib/local_env.sh
 source scripts/lib/http.sh
 
-DEBUG_DIR="$ROOT_DIR/debug/smoke"
+DEBUG_DIR="${BIN_EVAL_DEBUG_DIR:-$ROOT_DIR/debug/smoke}"
 USER_LISTEN_ADDR="${BIN_EVAL_LISTEN_ADDR:-}"
 USER_TEMPORAL_TASK_QUEUE="${BIN_EVAL_TEMPORAL_TASK_QUEUE:-}"
 mkdir -p "$DEBUG_DIR"

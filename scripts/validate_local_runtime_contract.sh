@@ -18,7 +18,8 @@ for script in \
   scripts/start-local.sh \
   scripts/stop-local.sh \
   scripts/status-local.sh \
-  scripts/live_curl_example.sh \
+  scripts/smoke_curl.sh \
+  scripts/run_e2e.sh \
   scripts/validate_litellm_responses.sh \
   scripts/validate_docs_curl.sh \
   scripts/validate_smoke_invariants.sh \

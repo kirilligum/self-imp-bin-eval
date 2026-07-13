@@ -42,4 +42,4 @@ status-local:
 	scripts/status-local.sh
 
 test-live-curl:
-	go run ./internal/cmd/verifyplan --manifest docs/test-matrix.yml --groups live
+	BIN_EVAL_EXTERNAL_STACK=true BIN_EVAL_LOAD_LOCAL_ENV=true BIN_EVAL_DEBUG_DIR=debug/live-curl go run ./internal/cmd/verifyplan --manifest docs/test-matrix.yml --groups live

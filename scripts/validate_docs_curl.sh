@@ -34,7 +34,8 @@ for pattern in \
   'total_possible_points' \
   'checklist_pass_rate' \
   'failed_question_ids' \
-  'scripts/live_curl_example.sh'; do
+  'debug/live-curl/incident_response' \
+  'debug/live-curl/release_notes'; do
   grep -En "$pattern" "$DOC" >/dev/null || fail "docs/curl.md missing pattern: $pattern"
 done
 

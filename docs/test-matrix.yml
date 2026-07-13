@@ -40,6 +40,7 @@ requirements:
   - REQ-048
   - REQ-049
   - REQ-050
+  - REQ-051
 
 groups: [lint, build, unit, race, integration, e2e, live, focused, plan, publication]
 
@@ -122,19 +123,10 @@ tests:
   - id: TEST-008
     name: OpenAI-compatible full-stack curl smoke
     requirements: [REQ-012, REQ-025, REQ-040, REQ-044, REQ-048, REQ-050]
-    groups: [e2e]
+    groups: [e2e, live]
     files: [scripts/run_e2e.sh, scripts/smoke_curl.sh, scripts/lib/http.sh, scripts/validate_smoke_invariants.sh, scripts/capture_artifacts.sh, internal/cmd/captureartifacts/main.go]
     command: [scripts/run_e2e.sh]
-    evidence: debug/smoke captures and invariant report
-    timeout_seconds: 3600
-
-  - id: TEST-009
-    name: Live LiteLLM curl smoke
-    requirements: [REQ-012, REQ-025, REQ-044, REQ-048, REQ-050]
-    groups: [live]
-    files: [scripts/live_curl_example.sh, scripts/lib/http.sh, scripts/capture_artifacts.sh, docs/curl.md]
-    command: [scripts/live_curl_example.sh]
-    evidence: debug/live-curl captures and summary
+    evidence: configured debug directory captures, invariant report, and exact artifact manifest
     timeout_seconds: 3600
 
   - id: TEST-010
@@ -241,6 +233,18 @@ tests:
       packages: [./internal/verification]
       pattern: "^TestP06CIContract$"
     evidence: CI topology and boundary contract output
+    timeout_seconds: 120
+
+  - id: TEST-108
+    name: Canonical executable curl workflow
+    requirements: [REQ-012, REQ-025, REQ-044, REQ-046, REQ-048, REQ-050, REQ-051]
+    groups: [plan]
+    files: [docs/test-matrix.yml, internal/verification/manifest_test.go, Makefile, .github/workflows/ci.yml, scripts/smoke_curl.sh, scripts/run_e2e.sh, scripts/validate_docs_curl.sh, scripts/validate_local_runtime_contract.sh, docs/curl.md]
+    command: [go, test, ./internal/verification, -run, "^TestP07CanonicalCurlRunner$", -count=1]
+    discovery:
+      packages: [./internal/verification]
+      pattern: "^TestP07CanonicalCurlRunner$"
+    evidence: one manifest-owned curl runner selected by local and CI topologies
     timeout_seconds: 120
 
   - id: TEST-112

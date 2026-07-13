@@ -1,13 +1,14 @@
 package config
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
 
 func TestConfigValidation(t *testing.T) {
 	t.Run("reports missing names without values", func(t *testing.T) {
-		t.Setenv("LITELLM_MASTER_KEY", "")
+		clearConfigEnv(t)
 		_, err := Load()
 		if err == nil {
 			t.Fatal("expected missing env error")
@@ -162,6 +163,20 @@ func TestConfigValidation(t *testing.T) {
 			t.Fatalf("error = %v, want limit name", err)
 		}
 	})
+}
+
+func clearConfigEnv(t *testing.T) {
+	t.Helper()
+	for _, entry := range os.Environ() {
+		name, _, _ := strings.Cut(entry, "=")
+		if strings.HasPrefix(name, "BIN_EVAL_") || name == "LITELLM_MASTER_KEY" {
+			t.Setenv(name, "")
+		}
+	}
+	for _, name := range RequiredEnvNames {
+		t.Setenv(name, "")
+	}
+	t.Setenv("LITELLM_MASTER_KEY", "")
 }
 
 func setRequiredEnv(t *testing.T) {

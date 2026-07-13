@@ -3,21 +3,21 @@
 ## 1. Title and metadata
 
 - Project name: bin-eval
-- Version: 2.2.0-plan
+- Version: 2.3.0-plan
 - Owners: Kirill, product and engineering
-- Date: 2026-07-12
+- Date: 2026-07-13
 - Document ID: PLAN-BIN-EVAL-RUBRIC-REFINEMENT-003
-- Status: Complete. P00 through P06 are implemented and passed canonical, deterministic full-stack, real LiteLLM, and persistent local curl verification on 2026-07-13.
-- Summary: This plan changes bin-eval from a single-pass weighted checklist into a rubric-driven binary evaluation pipeline. The implemented pipeline decomposes task and context into dimensions, generates candidates per dimension, assigns diagnostic split counts, and judges equal-value final questions. P06 closes verified reliability gaps through one manifest, one limit path, one terminal-failure record, retry-safe direct Temporal operations, one LLM trace boundary, one repeated-evaluation contract, and one full-stack HTTP test topology.
+- Status: Complete. P00 through P07 are implemented and passed canonical, deterministic full-stack, real LiteLLM, and persistent local curl verification on 2026-07-13. Publication verification completes after the resulting commit is pushed and CI passes.
+- Summary: This plan changes bin-eval from a single-pass weighted checklist into a rubric-driven binary evaluation pipeline. The implemented pipeline decomposes task and context into dimensions, generates candidates per dimension, assigns diagnostic split counts, and judges equal-value final questions. P06 closes verified reliability gaps through one manifest, one limit path, one terminal-failure record, retry-safe direct Temporal operations, one LLM trace boundary, one repeated-evaluation contract, and one full-stack HTTP test topology. P07 removes the remaining duplicate executable curl workflow without changing product behavior.
 
 ## 2. Design consensus and trade-offs
 
 - Topic: Fixed question count in generation prompt
   - Verdict: AGAINST
-  - Rationale: `internal/llm/prompts.go` currently asks for 5 to 8 questions in one global pass. The new rubric fan-out makes a fixed global count less meaningful; coverage comes from dimensions and rubrics rather than a hard-coded question range.
+  - Rationale: The former global prompt asked for 5 to 8 questions. The rubric fan-out makes a fixed global count less meaningful; coverage comes from dimensions and rubrics rather than a hard-coded question range.
 - Topic: Comparative strong/weak framing in prompts
   - Verdict: AGAINST
-  - Rationale: The current question generation prompt says questions should distinguish a strong answer from a weak answer. The target prompt should ask only for verifiable requirements from task, context, and rubric. This avoids subjective comparative language.
+  - Rationale: The former question generation prompt asked questions to distinguish a strong answer from a weak answer. The implemented prompt asks only for verifiable requirements from task, context, and rubric, avoiding subjective comparative language.
 - Topic: Prompt-level JSON shape instructions
   - Verdict: AGAINST
   - Rationale: `internal/llm/client.go` sends one forced strict function tool whose parameters are the output JSON Schema. Prompt text should not duplicate schema shape examples because the schema is the binding output contract. This is the canonical transport because the machine's LiteLLM ChatGPT Responses adapter preserves forced tools but intentionally drops `text.format`; there is no prompt-level JSON fallback or provider branch.
@@ -71,10 +71,16 @@
   - Rationale: `internal/llm` captures the exact serialized HTTP request and response bytes read within one central size bound for every completed call, including failed structured output. Activities persist the trace before returning under attempt-aware Garage keys. Over-limit capture is explicit. Typed errors contain classification, HTTP metadata, and artifact references but no raw model content. The plan does not claim atomic evidence persistence across a worker-process crash between the external call and Garage write.
 - Topic: Request-level evaluation repetitions
   - Verdict: DECISION
-  - Rationale: The initial `POST /checklists` request accepts `evaluation_runs`, default 3, so repetition policy belongs to the reusable checklist rather than the smoke harness. Allowed values are odd positive integers through one configured maximum, default 5. Evaluation uses majority aggregation per question, run-indexed judgment persistence, and one API judgment object per question containing every run plus the derived majority. This avoids ties, fractional score semantics, duplicate canonical rows, and evidence loss.
+  - Rationale: The initial `POST /checklists` request accepts `evaluation_runs`, default 3, so repetition policy belongs to the reusable checklist rather than the smoke harness. Allowed values are odd positive integers through one configured maximum whose default is 5. Evaluation uses majority aggregation per question, run-indexed judgment persistence, and one API judgment object per question containing every run plus the derived majority. This avoids ties, fractional score semantics, duplicate canonical rows, and evidence loss.
 - Topic: Self-contained CI and real LLM coverage
   - Verdict: DECISION
   - Rationale: CI has two independent gates that reuse the same Compose definition and curl runner. The deterministic gate runs on a GitHub-hosted runner for every change with a schema-conformant OpenAI-compatible fixture and proves product contracts, not model quality. The required live gate runs only on trusted `master` and release events on the repository-scoped `bin-eval-live` runner colocated with the local LiteLLM service; the job attaches that private container to the bin-eval Compose network without exposing it publicly. A deterministic success never substitutes for a live failure. When the separately developed caching LLM API is ready, CI changes only `BIN_EVAL_LLM_BASE_URL` and may move the live job back to a hosted runner; cache hit, miss, and upstream policy remain that service's responsibility, and bin-eval gains no cache-specific branch or adapter.
+- Topic: One executable curl workflow
+  - Verdict: DECISION
+  - Rationale: `scripts/smoke_curl.sh`, invoked through TEST-008, becomes the only executable checklist-and-evaluation curl workflow. `make test-e2e`, `make test-live-curl`, and both CI modes select TEST-008 with environment configuration appropriate to their topology. `scripts/live_curl_example.sh` and TEST-009 are deleted rather than retained as a wrapper or alternate path. The Fish commands in `docs/curl.md` remain operator documentation, not a second script implementation.
+- Topic: Public production deployment
+  - Verdict: FOLLOW-ON
+  - Rationale: External exposure requires explicit hosting, TLS, authentication, secret management, ingress, rate limiting, persistence, backup, monitoring, and rollback decisions. Those concerns belong in a separate production-deployment plan and must not add branches or adapters to the completed rubric pipeline.
 
 ## 3. PRD / stakeholder and system needs
 
@@ -83,8 +89,8 @@
 - Value: Rubric-guided coverage, automatic deletion of duplicate or low-value candidates, decomposition of compound candidates into independently judgeable final questions, repeated evaluation when requested, and deterministic Go-owned scoring over final binary judgments.
 - Business goals: Improve evaluation accuracy and diagnosability while retaining the running local service, persistent workflow architecture, and direct curl workflow.
 - Success metrics: Final checklists include dimensions, candidates, diagnostic weights, final atomic questions, and persisted repetition policy; no final question has a multiplier weight; projected final count is rejected before split fan-out when over budget; all workflow failures are structurally inspectable; retried terminal activities are idempotent; exact LLM attempt artifacts are addressable; deterministic and live CI jobs exercise the real bin-eval API; good answers score high and bad answers score low across the selected repetition count.
-- Scope: Existing rubric-refinement behavior plus a canonical executable verification manifest, pre-split budget validation, immutable terminal failure persistence, idempotent Temporal boundary operations, exact bounded LLM transport capture, request-level `evaluation_runs`, full-stack CI, deterministic OpenAI-compatible LLM fixtures, and a required live LLM quality job.
-- Non-goals: Public API exposure, auth, UI, learned calibration, category-level score reporting, prompt-specific schema repair loops, external paper parsing, cache implementation inside bin-eval, additional model-provider routing, and public deployment. The parallel caching LLM service is an external dependency behind the existing OpenAI-compatible endpoint; it is not implemented in this repository.
+- Scope: Existing rubric-refinement behavior plus a canonical executable verification manifest, pre-split budget validation, immutable terminal failure persistence, idempotent Temporal boundary operations, exact bounded LLM transport capture, request-level `evaluation_runs`, full-stack CI, deterministic OpenAI-compatible LLM fixtures, a required live LLM quality job, and consolidation onto one executable curl workflow.
+- Non-goals: Public API exposure, auth, UI, learned calibration, category-level score reporting, prompt-specific schema repair loops, external paper parsing, cache implementation inside bin-eval, additional model-provider routing, and public deployment within this plan. Public deployment is the next separate plan. The parallel caching LLM service is an external dependency behind the existing OpenAI-compatible endpoint; it is not implemented in this repository.
 - Dependencies: Go toolchain, Temporal Go SDK, Postgres, Garage, Docker Compose, local LiteLLM Responses API at `http://127.0.0.1:4000/v1/responses`, one repository-scoped self-hosted runner labeled `bin-eval-live`, an OpenAI-compatible deterministic CI fixture, future caching LLM API service, canonical Make commands, and smoke fixtures under `fixtures/smoke/cases/`.
 - Risks: Fan-out and repeated judging increase LLM calls; a request-selected repetition count can create ambiguous score semantics unless aggregation is fixed; exact response capture can increase Garage volume; live CI can be nondeterministic or unavailable; direct workflow starts have a small pre-start crash window; API response changes can break curl docs.
 - Assumptions: Existing local service is on `master`; canonical Make commands are available; the trusted live runner remains online with Docker access and receives LLM credentials through repository secrets; the caching service will remain OpenAI API compatible; deterministic fixtures can implement the same schema-constrained Responses endpoint; and no CI job calls an internal bin-eval package directly instead of the HTTP API for end-to-end acceptance.
@@ -141,6 +147,7 @@
 - REQ-048 (reliability): Live evaluation defaults to three request-selected runs and reports every run plus one deterministic per-question aggregate after the aggregation contract is approved. Acceptance: CI and local curl pass `evaluation_runs` explicitly, validate the persisted policy, enforce per-run minimum/maximum quality bounds plus aggregate separation, and retain commit-addressed evidence without persisting duplicate canonical judgment rows.
 - REQ-049 (reliability): Configured checklist limits have one meaning at every boundary. Acceptance: schema, LLM decoding, activity validation, workflow validation, and persistence consume the same effective limits; `max_split_count` cannot exceed the fixed diagnostic scale of 4; increasing supported dimension, candidate, or final limits does not trigger hidden default-limit rejection.
 - REQ-050 (verification): CI provides independent deterministic and live full-stack gates using one topology and one curl runner. Acceptance: both start Postgres, Temporal, Garage, API, and worker; deterministic jobs use an OpenAI-compatible HTTP fixture; required trusted `master` and release jobs use the real LLM API, or the external caching API once adopted; all product assertions enter through curl against bin-eval; deterministic success cannot mask live failure; reports and exact LLM artifacts are retained as CI evidence.
+- REQ-051 (maintainability): All executable curl checklist/evaluation verification uses TEST-008 and `scripts/smoke_curl.sh`. Acceptance: TEST-008 belongs to both `e2e` and `live` groups; `make test-e2e`, `make test-live-curl`, and both CI jobs invoke that manifest-owned command; persistent-local execution explicitly sets `BIN_EVAL_EXTERNAL_STACK=true`, `BIN_EVAL_LOAD_LOCAL_ENV=true`, and its evidence directory; `scripts/live_curl_example.sh` and TEST-009 do not exist; no replacement wrapper duplicates the HTTP sequence or assertions.
 
 ### Error handling and telemetry expectations
 
@@ -184,7 +191,7 @@ flowchart TB
 
 ## 5. Iterative implementation and test plan
 
-- Phase strategy: P00 through P05 contain the implemented rubric path; P06 closes verified reliability and evidence gaps in dependency order: manifest, semantics/limits, failure persistence, idempotency, transport artifacts, repetition, CI, final publication.
+- Phase strategy: P00 through P05 contain the implemented rubric path; P06 closes verified reliability and evidence gaps; P07 removes the remaining duplicate curl workflow and publishes the single-path result.
 - Implementation policy: keep one direct path through the system. Delete obsolete weighted-scoring runtime code as the rubric refinement path lands; the final runtime should have one current data model, one response contract, and one scoring implementation.
 - Verification-first controls: every P06 behavior starts with a failing canonical manifest entry. `make verify-plan` must prove that each focused Go pattern matches at least one test before running it; `[no tests to run]` is always failure.
 - Standards tailoring note: This plan borrows traceability and verification ideas from requirements engineering, but it intentionally does not add certification artifacts, extra assurance processes, or parallel code paths outside the local service objective.
@@ -200,11 +207,7 @@ flowchart TB
 - Risk: Exact LLM traces leak through errors. Trigger: raw content appears in Temporal history, Postgres failures, logs, or API responses. Mitigation: Garage-only raw bytes, bounded capture, safe artifact references, and explicit leakage tests.
 - Risk: Real LLM CI is nondeterministic or unavailable. Trigger: required live job fails due to provider instability rather than product behavior. Mitigation: deterministic full-stack contract job remains independently required; the live job records provider classification and uses the caching endpoint when available, without fallback inside bin-eval.
 - Risk: Verification manifest duplicates plan commands. Trigger: commands drift between Markdown and YAML. Mitigation: after P06, executable details live only in `docs/test-matrix.yml`; the plan references test IDs.
-
-### Suspension/resumption criteria
-
-- Suspend repetition implementation while aggregation semantics are open. Suspend live acceptance when no real or caching LLM endpoint is reachable. Deterministic P06 work continues unless its own dependency is blocked.
-- Resume by recording the decision in the plan, then continue from the last phase with all phase tests passing.
+- Risk: Consolidating the local curl script changes environment loading or accidentally weakens quality assertions. Trigger: persistent-local TEST-008 cannot reach the running API, or transient and CI modes execute different assertions. Mitigation: move local environment loading into the canonical runner, vary only environment configuration, and require the same TEST-008 command and assertions in every topology.
 
 ### Completed Baseline: P00 through P05
 
@@ -230,7 +233,7 @@ Impacted surfaces: `docs/test-matrix.yml`, verification tooling, prompts, limit 
 Lifecycle evidence:
 - Requirements evidence: the P06 requirement set and selected decisions in `ask_me/reliability-audit-corrections.md`.
 - Design/code surface evidence: canonical manifest, migrations, typed failure records, idempotent terminal methods, exact LLM traces, request repetition policy, CI stack definitions.
-- Verification method: TEST-101 through TEST-107 and EVAL-101.
+- Verification method: TEST-008, TEST-009, and TEST-101 through TEST-107.
 - Validation purpose: replace prior green-but-incomplete evidence with mechanically complete, full-stack verification.
 - Configuration checkpoint: `phase-p06-reliability-complete`.
 - Risks and assumptions: repeated judgment aggregation uses the selected odd-count majority contract; required live CI has credentials for a real OpenAI-compatible LLM endpoint.
@@ -331,7 +334,7 @@ Plan-and-Solve subtasks:
 - `P06.S13 Implement the selected repeated-evaluation contract`
   - Action: Add and persist `evaluation_runs`, execute that many independent judge calls, persist each judgment once with `run_index`, derive per-question majority and score through one pure function, expose all evidence and the derived answer in one `judgments` array, and update Fish curl examples.
   - Requirement link: REQ-013, REQ-048.
-  - Verification link: TEST-106, EVAL-101.
+  - Verification link: TEST-106, TEST-008.
   - Verification mode: GREEN and MEASURE.
   - Expected result: default three-run and caller-selected behavior are deterministic after LLM outputs and visible through existing routes.
   - Unlocks: P06.S14
@@ -346,33 +349,78 @@ Plan-and-Solve subtasks:
 - `P06.S15 Implement deterministic and live full-stack CI jobs`
   - Action: Add CI that runs canonical static/unit/race/integration gates and reuses one Compose definition and curl e2e runner. The GitHub-hosted deterministic job runs for every change with `BIN_EVAL_LLM_BASE_URL` set to the fixture. The separately required trusted `master` and release job runs on the repository-scoped local runner, privately attaches the existing LiteLLM container to the Compose network, sets the same variable to that endpoint or later to the caching API, and fails independently on credentials, reachability, or quality. Upload commit-addressed reports and artifacts and stop only the live app containers after the job.
   - Requirement link: REQ-025, REQ-050.
-  - Verification link: TEST-107, EVAL-101.
+  - Verification link: TEST-107, TEST-008.
   - Verification mode: GREEN and MEASURE.
   - Expected result: deterministic and live jobs use the same bin-eval binaries and HTTP routes; only the configured external LLM endpoint differs.
   - Unlocks: P06.S16
 - `P06.S16 Execute final canonical verification and publish`
-  - Action: Run `make verify-plan`, lint, build, unit, race, integration, deterministic e2e, live EVAL-101, local curl, and diff checks; retain evidence, clean transient binaries/logs, commit, and push only the verified state.
+  - Action: Run `make verify-plan`, lint, build, unit, race, integration, deterministic TEST-008, live TEST-008, local TEST-009, and diff checks; retain evidence, clean transient binaries/logs, commit, and push only the verified state.
   - Requirement link: all P06 requirements.
-  - Verification link: TEST-101 through TEST-107, EVAL-101.
+  - Verification link: TEST-008, TEST-009, and TEST-101 through TEST-107.
   - Verification mode: FINAL.
   - Expected result: every manifest test executes at least one intended test, every gate is green, and branch publication matches the verified commit.
   - Stop/escalate condition: Stop on any false-green, unclassified failure, live threshold miss, or unresolved aggregation contract.
-  - Unlocks: Plan completion
+  - Unlocks: P06 completion
 
 Exit gates:
-- Proceed: TEST-101 through TEST-107 pass through the canonical manifest, EVAL-101 passes, CI evidence is retained, and the verified commit is published.
+- Proceed: TEST-008, TEST-009, and TEST-101 through TEST-107 pass through the canonical manifest, CI evidence is retained, and the verified commit is published.
 - Escalate: real/caching LLM API credentials, reachability, or aggregation semantics are unavailable.
 - Stop: any path bypasses bin-eval's HTTP API, introduces cache/provider branching inside bin-eval, or reports success with zero matching tests.
 
+### Phase P07: Consolidate Curl Verification and Publish Is Complete
+
+Phase goal: Remove the last duplicated executable HTTP workflow while preserving the documented Fish sequence, transient local verification, persistent local verification, and both CI endpoint classes.
+
+Scope and objectives, including impacted `REQ-###`: REQ-012, REQ-025, REQ-044, REQ-046, REQ-048, REQ-050, and REQ-051.
+
+Impacted surfaces: `scripts/smoke_curl.sh`, `scripts/live_curl_example.sh`, `scripts/run_e2e.sh`, `scripts/lib/local_env.sh`, `docs/curl.md`, `docs/test-matrix.yml`, `Makefile`, `.github/workflows/ci.yml`, `internal/verification/manifest_test.go`, and `internal/config/config_test.go` for inherited-environment isolation discovered by the aggregate release gate.
+
+Plan-and-Solve subtasks:
+
+- `P07.S01 Add failing single-curl-runner coverage`
+  - Action: Add TEST-108 to verify that TEST-008 is the only manifest entry owning the curl workflow, belongs to both `e2e` and `live`, is selected by both Make targets and both CI jobs, supports the persistent local environment, and has no `scripts/live_curl_example.sh` replacement or duplicate HTTP sequence.
+  - Requirement link: REQ-046, REQ-050, REQ-051.
+  - Verification link: TEST-108.
+  - Verification mode: RED.
+  - Expected result: Non-zero while TEST-009 and `scripts/live_curl_example.sh` remain.
+  - Unlocks: P07.S02
+- `P07.S02 Implement one executable curl workflow`
+  - Action: Move persistent-local environment loading needed by the canonical TEST-008 runner into `scripts/run_e2e.sh`; make TEST-008 a member of both `e2e` and `live`; make `make test-live-curl` select TEST-008 with explicit external-stack, local-environment, and evidence-directory configuration; update both CI jobs to invoke the manifest-owned e2e target; remove TEST-009 and delete `scripts/live_curl_example.sh`; update documentation validation without adding a wrapper, mode-specific assertion set, or second quality implementation.
+  - Requirement link: REQ-012, REQ-025, REQ-044, REQ-048, REQ-050, REQ-051.
+  - Verification link: TEST-008, TEST-108.
+  - Verification mode: GREEN.
+  - Expected result: Every topology executes the same API sequence, invariants, quality thresholds, and artifact capture through TEST-008; only endpoint and stack ownership configuration differ.
+  - Unlocks: P07.S03
+- `P07.S03 Run canonical and live verification`
+  - Action: Run TEST-108, lint, build, unit, race, integration, the deterministic full-stack TEST-008 path, persistent-local `make test-live-curl` against the served LiteLLM stack, and diff/cleanup checks.
+  - Requirement link: all P07 requirements.
+  - Verification link: TEST-008, TEST-101 through TEST-108.
+  - Verification mode: FINAL.
+  - Expected result: All gates pass, TEST-008 retains the established quality thresholds and exact artifact checks, and no transient binaries or logs remain as tracked files.
+  - Stop/escalate condition: Stop on a changed quality threshold, skipped real-LLM run, endpoint-specific assertion branch, duplicate runner, or unclassified failure.
+  - Unlocks: P07.S04
+- `P07.S04 Publish and verify publication`
+  - Action: Commit the plan correction and curl consolidation, push `master`, wait for deterministic and required live CI to pass on the pushed SHA, then run TEST-011 against the clean published worktree.
+  - Requirement link: REQ-044, REQ-050, REQ-051.
+  - Verification link: TEST-011.
+  - Verification mode: PUBLISH.
+  - Expected result: `master` equals `origin/master`, the worktree is clean, and both CI evidence sets identify the published commit.
+  - Unlocks: Plan completion and the separate public-production-deployment plan
+
+Exit gates:
+- Proceed: TEST-008 and TEST-101 through TEST-108 pass, deterministic and live CI pass for the published SHA, TEST-011 confirms publication, and no duplicate executable curl workflow remains.
+- Escalate: the persistent local stack or trusted live runner cannot reach the configured real LiteLLM endpoint.
+- Stop: any implementation retains TEST-009, `scripts/live_curl_example.sh`, a wrapper that repeats the workflow, or topology-specific product assertions.
+
 ## 6. Evaluation acceptance
 
-EVAL-101 is the only active release evaluation. Both CI modes use the committed smoke fixtures and the same curl runner against the full stack:
+TEST-008 is the only executable curl workflow and the only active model-quality gate. Transient local, persistent local, deterministic CI, and live CI modes use the committed smoke fixtures and the same runner against the full stack. The documented Fish sequence remains a manually executable API example, not another test implementation.
 
-- Deterministic mode proves API, workflow, persistence, limit, failure, artifact, and score invariants against the OpenAI-compatible fixture.
+- Deterministic mode proves full-stack API, workflow, persistence, artifact, and score invariants against the OpenAI-compatible fixture.
 - Live mode uses the request-selected run count and requires every good-answer run to score at least 0.70, every bad-answer run to score at most 0.60, aggregate good and bad scores of at least 0.80 and at most 0.50, and an aggregate gap of at least 0.30.
-- Every checklist has at least eight final questions; every run covers every final question ID; projected-limit, structured-failure, and exact-artifact diagnostics are present.
+- Every successful smoke checklist has at least eight final questions, every run covers every final question ID, and exact request/response artifacts are captured. TEST-102 verifies projected-limit rejection before split fan-out; TEST-103 verifies structured terminal-failure diagnostics. Successful smoke cases require zero limit hits rather than failure diagnostics.
 - Evidence records fixture version, commit SHA, configured endpoint class, per-run results, aggregate results, and artifact references without secrets.
-- Run counts are odd positive values through the configured maximum, default 5; majority is derived per final question.
+- Run counts are odd positive values through the configured maximum. The request default is 3, the configured maximum defaults to 5, and majority is derived per final question.
 
 ## 7. Tests
 
@@ -382,11 +430,11 @@ EVAL-101 is the only active release evaluation. Both CI modes use the committed 
 - Integration: migrations, Postgres stores, Garage artifacts, and Compose service contracts.
 - End-to-end: the four HTTP routes through the complete stack with deterministic and live OpenAI-compatible endpoints.
 - Static: formatting, vet, docs, scripts, runtime configuration, and CI topology.
-- Release: all deterministic gates plus EVAL-101 and publication-state verification.
+- Release: all deterministic gates plus persistent-local and CI-live executions of TEST-008 and publication-state verification.
 
 ### 7.2 Command ownership
 
-`docs/test-matrix.yml` gives every test one structured argument vector, verification groups, runtime budget, files, requirement links, and evidence. `Makefile` exposes the repository-level operator targets required by `AGENTS.md`; each target calls the same manifest runner with a group selector. Manifest commands invoke tools and scripts directly, never a selecting Make target, so execution cannot recurse. This plan references only the stable `make verify-plan` entrypoint and test IDs; it does not duplicate underlying test commands.
+`docs/test-matrix.yml` gives every test one structured argument vector, verification groups, runtime budget, files, requirement links, and evidence. `Makefile` exposes the repository-level operator targets required by `AGENTS.md`; each target calls the same manifest runner with a group selector. Manifest commands invoke tools and scripts directly, never a selecting Make target, so execution cannot recurse. After P07, both `e2e` and `live` select TEST-008; the live Make target supplies only persistent-stack environment configuration. This plan references only the stable `make verify-plan` entrypoint and test IDs; it does not duplicate underlying test commands.
 
 ### 7.3 Manual checks, optional
 
@@ -394,7 +442,7 @@ No CHECK items are required for this implementation plan.
 
 ## 8. Data contract
 
-Target schema after P06:
+Implemented schema after P06:
 
 - `checklists(id, status, evaluation_runs, task_artifact_key, context_artifact_key, created_at, completed_at)`
 - `checklist_dimensions(checklist_id, id, ordinal, name, rubric, rationale)`
@@ -405,7 +453,7 @@ Target schema after P06:
 - `judgments(evaluation_id, run_index, checklist_id, question_id, evidence, answer)`
 - `workflow_failures(id, checklist_id, evaluation_id, workflow_id, stage, error_class, error_code, message, retryable, attempt_count, diagnostics, artifact_references, created_at)`
 
-`workflow_failures` has a check constraint requiring exactly one entity foreign key and partial unique constraints allowing one terminal failure per entity. Failure insertion and the entity's transition to `failed` occur in one transaction. The recommended judgment representation stores each model result once; majority answers, failed IDs, and scores are derived without canonical duplicate rows.
+`workflow_failures` has a check constraint requiring exactly one entity foreign key and partial unique constraints allowing one terminal failure per entity. Failure insertion and the entity's transition to `failed` occur in one transaction. The implemented judgment representation stores each model result once; majority answers, failed IDs, and scores are derived without canonical duplicate rows.
 
 Invariants:
 
@@ -439,55 +487,23 @@ Privacy/data quality constraints:
 - Seeds: committed fixtures under `fixtures/smoke/cases/incident_response` and `fixtures/smoke/cases/release_notes`.
 - Hardware assumptions: local shaman host with Docker Engine, systemd/user services, and Go toolchain; hosted CI with Docker Compose capacity sufficient for Postgres, Temporal, Garage, API, worker, and deterministic LLM fixture.
 - OS/driver/container tag: Ubuntu-like Linux, Docker Compose v2, `postgres:16.4`, `temporalio/auto-setup:1.28.4`, `dxflrs/garage:v2.3.0`, existing LiteLLM image from `/home/kirill/p/litellm-chatgpt`.
-- Relevant environment variables: existing bin-eval variables plus planned `BIN_EVAL_MAX_EVALUATION_RUNS`; CI sets the existing `BIN_EVAL_LLM_BASE_URL`, `BIN_EVAL_LLM_API_KEY`, and `BIN_EVAL_MODEL_PROFILE` for deterministic, direct-real, or cached-real endpoints without adding provider-specific bin-eval configuration.
+- Relevant environment variables: existing bin-eval variables plus `BIN_EVAL_MAX_EVALUATION_RUNS`; CI sets the existing `BIN_EVAL_LLM_BASE_URL`, `BIN_EVAL_LLM_API_KEY`, and `BIN_EVAL_MODEL_PROFILE` for deterministic, direct-real, or cached-real endpoints without adding provider-specific bin-eval configuration.
 - Request reproducibility: every checklist creation response records explicit `evaluation_runs` and effective checklist limits; CI evidence records model profile, git SHA, and exact attempt artifact keys.
 - CI reproducibility: deterministic jobs retain fixture version and full-stack report; live jobs retain endpoint class (`real` or `cache`), provider request IDs where available, per-run metrics, commit SHA, and no secret values.
+- Curl reproducibility: TEST-008 owns one command and one assertion set; transient, persistent-local, deterministic CI, and live CI execution differ only through environment configuration and external endpoint ownership.
 
 ## 10. Requirements Traceability Matrix
 
-The executable matrix lives only in `docs/test-matrix.yml` after P06.S03. The typed manifest validator enforces complete coverage of canonical requirements; unique requirement and test IDs; unique test argument vectors; known groups; existing test paths; non-recursive execution; nonzero focused-test discovery; and evidence ownership. This plan intentionally does not duplicate executable rows or commands.
+The executable matrix lives only in `docs/test-matrix.yml`. P07 removes TEST-009, assigns TEST-008 to both curl verification groups, and adds TEST-108 for the single-runner contract. The typed manifest validator enforces complete coverage of canonical requirements; unique requirement and test IDs; unique test argument vectors; known groups; existing test paths; non-recursive execution; nonzero focused-test discovery; and evidence ownership. This plan intentionally does not duplicate executable rows or commands.
 
-## 11. Execution log template
+## 11. Completion record
 
-```markdown
-# Execution Log - PLAN-BIN-EVAL-RUBRIC-REFINEMENT-003
+- P00 through P07 are complete on `master`; TEST-011 establishes publication after the completion commit is pushed.
+- Executable requirement and test ownership lives only in `docs/test-matrix.yml`.
+- Commit-addressed deterministic and live reports are retained by CI; local ignored evidence is written under `debug/`.
+- TEST-011 verifies the clean published commit after push because publication cannot be established by a pre-push test.
+- Detailed implementation history and deviations remain in git history rather than a second hand-maintained execution ledger.
 
-## Phase Status
-- P00-P05 baseline: Completed
-- P06: Pending
+## 12. Follow-on production deployment
 
-## Completed Steps
-- Phase:
-- Subtask:
-- Commit:
-- Evidence:
-
-## Quantitative Results
-- Metric:
-- Mean:
-- Std:
-- 95% CI:
-- Sample size:
-- Command:
-
-## Issues/Resolutions
-- Issue:
-- Resolution:
-- Evidence:
-
-## Failed Attempts
-- Attempt:
-- Failure mode:
-- Root cause:
-- Next action:
-
-## Deviations
-- Planned behavior:
-- Actual behavior:
-- Reason:
-
-## Lessons Learned
-- Observation:
-- Impact:
-- Future change:
-```
+After P07, create a separate public-production-deployment plan. It must select one hosting topology and define TLS, authentication, authorization scope, secret delivery, ingress and rate limits, persistent Postgres/Garage/Temporal operation, backups, monitoring, deployment verification, and rollback. It must expose the existing four-route API without changing the rubric DAG, scoring contract, LLM boundary, or local development path.

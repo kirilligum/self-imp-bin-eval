@@ -170,19 +170,22 @@ end
 
 ## Live Curl Validation
 
-The script version of the same curl sequence is:
+Run the canonical curl workflow against the persistent local service:
 
 ```fish
-scripts/live_curl_example.sh
+make test-live-curl
 ```
 
 It writes:
 
-- `debug/live-curl/create_checklist.json`
-- `debug/live-curl/checklist.json`
-- `debug/live-curl/create_evaluation.json`
-- `debug/live-curl/evaluation.json`
+- `debug/live-curl/incident_response/checklist.json`
+- `debug/live-curl/incident_response/evaluation_good.json`
+- `debug/live-curl/incident_response/evaluation_bad.json`
+- `debug/live-curl/release_notes/checklist.json`
+- `debug/live-curl/release_notes/evaluation_good.json`
+- `debug/live-curl/release_notes/evaluation_bad.json`
 - `debug/live-curl/summary.json`
+- `debug/live-curl/invariant_report.json`
 - `debug/live-curl/llm-artifacts/manifest.json`
 - exact LLM request and response files under `debug/live-curl/llm-artifacts/objects/`
 
@@ -190,6 +193,6 @@ The summary includes `checklist_id`, `evaluation_id`, `dimension_count`, `candid
 
 ## Existing Smoke Path
 
-`make test-e2e` remains the canonical end-to-end regression command for transient local processes. It starts the local Compose dependencies, starts short-lived API and worker binaries, creates one checklist per fixture case, evaluates good and bad answers, polls the same four async routes, and writes captured JSON plus the exact LLM artifact export to `debug/smoke/`.
+TEST-008 is the single executable curl workflow. `make test-e2e` runs it with transient local processes: it starts the local Compose dependencies, starts short-lived API and worker binaries, creates one checklist per fixture case, evaluates good and bad answers, polls the same four async routes, and writes captured JSON plus the exact LLM artifact export to `debug/smoke/`.
 
-Use `make test-live-curl` when validating the persistent local service. Use `make test-e2e` when validating the full smoke behavior without installing systemd units.
+`make test-live-curl` selects the same TEST-008 command, assertions, quality thresholds, and artifact capture with the persistent service URL and environment. Use it when validating the installed local service. Use `make test-e2e` when validating the same behavior with transient API and worker processes.

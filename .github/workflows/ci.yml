@@ -40,7 +40,7 @@ jobs:
           BIN_EVAL_ENDPOINT_CLASS: deterministic
           BIN_EVAL_FIXTURE_VERSION: v2
           BIN_EVAL_GIT_SHA: ${{ github.sha }}
-        run: BIN_EVAL_EXTERNAL_STACK=true scripts/run_e2e.sh
+        run: make test-e2e
       - name: Capture container logs
         if: always()
         run: mkdir -p debug && docker compose --env-file deploy/compose/.env.example -f deploy/compose/docker-compose.yml --profile app --profile deterministic logs --no-color > debug/compose.log
@@ -89,7 +89,7 @@ jobs:
           BIN_EVAL_ENDPOINT_CLASS: live
           BIN_EVAL_FIXTURE_VERSION: not-applicable
           BIN_EVAL_GIT_SHA: ${{ github.sha }}
-        run: BIN_EVAL_EXTERNAL_STACK=true scripts/run_e2e.sh
+        run: make test-e2e
       - name: Capture container logs
         if: always()
         run: mkdir -p debug && docker compose --env-file deploy/compose/.env.example -f deploy/compose/docker-compose.yml --profile app logs --no-color > debug/compose.log

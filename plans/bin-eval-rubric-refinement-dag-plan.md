@@ -78,9 +78,9 @@
 - Topic: One executable curl workflow
   - Verdict: DECISION
   - Rationale: `scripts/smoke_curl.sh`, invoked through TEST-008, becomes the only executable checklist-and-evaluation curl workflow. `make test-e2e`, `make test-live-curl`, and both CI modes select TEST-008 with environment configuration appropriate to their topology. `scripts/live_curl_example.sh` and TEST-009 are deleted rather than retained as a wrapper or alternate path. The Fish commands in `docs/curl.md` remain operator documentation, not a second script implementation.
-- Topic: Public production deployment
+- Topic: Public production deployment boundary and topology
   - Verdict: FOLLOW-ON
-  - Rationale: External exposure requires explicit hosting, TLS, authentication, secret management, ingress, rate limiting, persistence, backup, monitoring, and rollback decisions. Those concerns belong in a separate production-deployment plan and must not add branches or adapters to the completed rubric pipeline.
+  - Rationale: The production topology is this computer using its existing Tailscale public ingress. TLS, authentication, secret management, rate limiting, persistence, backup, monitoring, deployment, and rollback details belong in a separate production-deployment plan and must not add branches or adapters to the completed rubric pipeline.
 
 ## 3. PRD / stakeholder and system needs
 
@@ -506,4 +506,4 @@ The executable matrix lives only in `docs/test-matrix.yml`. P07 removes TEST-009
 
 ## 12. Follow-on production deployment
 
-After P07, create a separate public-production-deployment plan. It must select one hosting topology and define TLS, authentication, authorization scope, secret delivery, ingress and rate limits, persistent Postgres/Garage/Temporal operation, backups, monitoring, deployment verification, and rollback. It must expose the existing four-route API without changing the rubric DAG, scoring contract, LLM boundary, or local development path.
+After P07, create a separate public-production-deployment plan for this computer and its existing Tailscale public ingress. It must inventory the active Tailscale exposure, define the public hostname and route, and specify TLS, authentication, authorization scope, secret delivery, ingress and rate limits, persistent Postgres/Garage/Temporal operation, backups, monitoring, deployment verification, and rollback. It must expose the existing four-route API without changing the rubric DAG, scoring contract, LLM boundary, or local development path.

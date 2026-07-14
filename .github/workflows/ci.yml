@@ -15,8 +15,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: true
@@ -44,7 +44,7 @@ jobs:
       - name: Capture container logs
         if: always()
         run: mkdir -p debug && docker compose --env-file deploy/compose/.env.example -f deploy/compose/docker-compose.yml --profile app --profile deterministic logs --no-color > debug/compose.log
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: deterministic-${{ github.sha }}
@@ -56,7 +56,7 @@ jobs:
     runs-on: [self-hosted, linux, x64, bin-eval-live]
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Require live LLM configuration
         env:
           BIN_EVAL_LLM_BASE_URL: ${{ secrets.BIN_EVAL_LLM_BASE_URL }}
@@ -93,7 +93,7 @@ jobs:
       - name: Capture container logs
         if: always()
         run: mkdir -p debug && docker compose --env-file deploy/compose/.env.example -f deploy/compose/docker-compose.yml --profile app logs --no-color > debug/compose.log
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: live-${{ github.sha }}

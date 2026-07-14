@@ -36,6 +36,19 @@ func TestP06CIContract(t *testing.T) {
 	require.Contains(t, string(workflowPayload), "runs-on: [self-hosted, linux, x64, bin-eval-live]")
 	require.Contains(t, string(workflowPayload), "docker network connect --alias bin-eval-litellm")
 	require.Contains(t, string(workflowPayload), "Stop live app containers")
+	actionCounts := make(map[string]int)
+	for _, job := range workflow.Jobs {
+		for _, step := range job.Steps {
+			if strings.HasPrefix(step.Uses, "actions/") {
+				actionCounts[step.Uses]++
+			}
+		}
+	}
+	require.Equal(t, map[string]int{
+		"actions/checkout@v7":        2,
+		"actions/setup-go@v6":        1,
+		"actions/upload-artifact@v7": 2,
+	}, actionCounts, "CI must use the supported Node 24 action majors")
 	runnerInstaller, err := os.ReadFile(filepath.Join(root, "scripts", "install-live-ci-runner.sh"))
 	require.NoError(t, err)
 	require.Contains(t, string(runnerInstaller), "ExecStart=/usr/bin/sg docker")

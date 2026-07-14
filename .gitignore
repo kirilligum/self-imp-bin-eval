@@ -5,6 +5,8 @@
 
 bin/
 debug/
+backups/
 coverage.out
 firebase-debug.log
 deploy/local/bin-eval.env
+deploy/local/bin-eval-public.env

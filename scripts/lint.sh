@@ -15,4 +15,5 @@ fi
 
 scripts/validate_local_runtime_contract.sh
 scripts/validate_docs_curl.sh
+scripts/validate_public_runtime_contract.sh
 go vet ./...

@@ -105,6 +105,25 @@ services:
       dockerfile: deploy/compose/Dockerfile
     entrypoint: ["/bin-eval-llm-fixture"]
 
+  public-gateway:
+    profiles: ["public"]
+    image: nginx:1.28.2-alpine
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      NGINX_ENVSUBST_FILTER: ^BIN_EVAL_PUBLIC_(BEARER_TOKEN|GATEWAY_PORT|BACKEND_URL)$$
+      BIN_EVAL_PUBLIC_BEARER_TOKEN: ${BIN_EVAL_PUBLIC_BEARER_TOKEN:-}
+      BIN_EVAL_PUBLIC_GATEWAY_PORT: ${BIN_EVAL_PUBLIC_GATEWAY_PORT:-18081}
+      BIN_EVAL_PUBLIC_BACKEND_URL: ${BIN_EVAL_PUBLIC_BACKEND_URL:-http://127.0.0.1:8080}
+    volumes:
+      - ./nginx-public.conf.template:/etc/nginx/templates/default.conf.template:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:$${BIN_EVAL_PUBLIC_GATEWAY_PORT}/healthz"]
+      interval: 5s
+      timeout: 2s
+      retries: 12
+      start_period: 2s
+
 volumes:
   postgres-data:
   garage-meta:

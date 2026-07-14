@@ -11,6 +11,9 @@ if [[ "${BIN_EVAL_LOAD_LOCAL_ENV:-false}" == "true" ]]; then
   BIN_EVAL_ENV_FILE="$(bin_eval_default_env_file_for_mode "$ROOT_DIR" "$MODE")"
   bin_eval_load_local_env "$ROOT_DIR"
 fi
+if [[ "${BIN_EVAL_LOAD_PUBLIC_ENV:-false}" == "true" ]]; then
+  bin_eval_load_public_env "$ROOT_DIR"
+fi
 
 DEBUG_DIR="${BIN_EVAL_DEBUG_DIR:-debug/smoke}"
 

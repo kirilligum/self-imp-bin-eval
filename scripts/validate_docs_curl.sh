@@ -20,6 +20,8 @@ for pattern in \
   'make start-local' \
   'make status-local' \
   'make test-live-curl' \
+  '^function bin_eval_curl$' \
+  'Authorization: Bearer \$BIN_EVAL_PUBLIC_BEARER_TOKEN' \
   'POST /checklists' \
   'GET /checklists/' \
   'POST /evaluations' \
@@ -45,6 +47,10 @@ fi
 
 if grep -En 'set status([[:space:]]|$)' "$DOC" >/dev/null; then
   fail "docs/curl.md uses Fish read-only variable name: status"
+fi
+
+if grep -En '^[[:space:]]*curl -fsS .*(checklists|evaluations)' "$DOC" >/dev/null; then
+  fail "docs/curl.md bypasses the public-aware curl helper"
 fi
 
 echo "docs curl contract ok"

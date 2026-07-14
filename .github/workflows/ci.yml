@@ -90,6 +90,11 @@ jobs:
           BIN_EVAL_FIXTURE_VERSION: not-applicable
           BIN_EVAL_GIT_SHA: ${{ github.sha }}
         run: make test-e2e
+      - name: Public ingress gate
+        env:
+          BIN_EVAL_PUBLIC_URL: ${{ vars.BIN_EVAL_PUBLIC_URL }}
+          BIN_EVAL_PUBLIC_BEARER_TOKEN: ${{ secrets.BIN_EVAL_PUBLIC_BEARER_TOKEN }}
+        run: make test-public-ingress
       - name: Capture container logs
         if: always()
         run: mkdir -p debug && docker compose --env-file deploy/compose/.env.example -f deploy/compose/docker-compose.yml --profile app logs --no-color > debug/compose.log

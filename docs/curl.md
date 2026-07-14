@@ -1,6 +1,6 @@
-# bin-eval Local Curl Path
+# bin-eval Curl Path
 
-`bin-eval` is a local-only service by default. The API binds to `127.0.0.1:8080`, starts workflows through Temporal, and the worker calls the existing LiteLLM Responses API at `http://127.0.0.1:4000/v1/responses` with model `gpt-5.4-mini`.
+`bin-eval` binds locally to `127.0.0.1:8080` by default. The production endpoint is an authenticated Tailscale Funnel route documented in `docs/public-deployment.md`. Both endpoints start workflows through Temporal, and the worker calls the existing LiteLLM Responses API at `http://127.0.0.1:4000/v1/responses` with model `gpt-5.4-mini`.
 
 The current API is asynchronous. The curl workflow is therefore a sequence:
 
@@ -48,14 +48,24 @@ The local env file may leave `BIN_EVAL_LLM_API_KEY` empty. The service also load
 
 ## Copy-Paste Curl Sequence
 
-These Fish commands are safe to paste as a block after the local service is running. They use `curl -fsS` so HTTP failures stop the command, while successful responses are written to `debug/live-curl/` for inspection.
+These Fish commands are safe to paste as a block after the selected endpoint is running. They use `curl -fsS` so HTTP failures stop the command, while successful responses are written to `debug/live-curl/` for inspection. The `bin_eval_curl` function adds the public bearer header when `BIN_EVAL_PUBLIC_BEARER_TOKEN` is set and otherwise calls the local API without authentication.
 
-Set the local API URL:
+Set the API URL and curl authentication:
 
 ```fish
 # Use the local-only API endpoint unless BIN_EVAL_URL is already set.
 if not set -q BIN_EVAL_URL
     set -gx BIN_EVAL_URL http://127.0.0.1:8080
+end
+
+# Use one curl command for local and public endpoints. The token is read from the
+# environment and is never embedded in this document or written to debug files.
+function bin_eval_curl
+    set -l auth_args
+    if set -q BIN_EVAL_PUBLIC_BEARER_TOKEN; and test -n "$BIN_EVAL_PUBLIC_BEARER_TOKEN"
+        set auth_args -H "Authorization: Bearer $BIN_EVAL_PUBLIC_BEARER_TOKEN"
+    end
+    command curl $auth_args $argv
 end
 
 # Keep request and response captures out of the repo; debug/ is ignored.
@@ -70,7 +80,7 @@ jq -c '{task, context, evaluation_runs:3}' fixtures/smoke/cases/release_notes/ta
 
 # Start checklist generation. The API returns 202 with a checklist_id because
 # question generation runs asynchronously in Temporal.
-curl -fsS -X POST "$BIN_EVAL_URL/checklists" \
+bin_eval_curl -fsS -X POST "$BIN_EVAL_URL/checklists" \
   -H 'Content-Type: application/json' \
   --data @debug/live-curl/create_checklist_payload.json \
   -o debug/live-curl/create_checklist.json
@@ -85,7 +95,7 @@ Poll the checklist until dimensions, candidate questions, diagnostic weights, an
 ```fish
 for attempt in (seq 1 600)
   # Poll the checklist state. It starts as running and finishes as succeeded or failed.
-  curl -fsS "$BIN_EVAL_URL/checklists/$checklist_id" \
+  bin_eval_curl -fsS "$BIN_EVAL_URL/checklists/$checklist_id" \
     -o debug/live-curl/checklist.json
 
   set checklist_state (jq -r '.status' debug/live-curl/checklist.json)
@@ -125,7 +135,7 @@ jq -n --arg id "$checklist_id" \
   > debug/live-curl/create_evaluation_payload.json
 
 # Start answer evaluation. This also returns 202 because scoring runs async.
-curl -fsS -X POST "$BIN_EVAL_URL/evaluations" \
+bin_eval_curl -fsS -X POST "$BIN_EVAL_URL/evaluations" \
   -H 'Content-Type: application/json' \
   --data @debug/live-curl/create_evaluation_payload.json \
   -o debug/live-curl/create_evaluation.json
@@ -140,7 +150,7 @@ Poll the evaluation until score fields are ready:
 ```fish
 for attempt in (seq 1 600)
   # Poll the evaluation state until the worker has scored the answer.
-  curl -fsS "$BIN_EVAL_URL/evaluations/$evaluation_id" \
+  bin_eval_curl -fsS "$BIN_EVAL_URL/evaluations/$evaluation_id" \
     -o debug/live-curl/evaluation.json
 
   set evaluation_state (jq -r '.status' debug/live-curl/evaluation.json)

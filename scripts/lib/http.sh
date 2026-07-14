@@ -1,11 +1,19 @@
 #!/usr/bin/env bash
 
+bin_eval_curl() {
+  local auth_args=()
+  if [[ -n "${BIN_EVAL_PUBLIC_BEARER_TOKEN:-}" ]]; then
+    auth_args=(-H "Authorization: Bearer ${BIN_EVAL_PUBLIC_BEARER_TOKEN}")
+  fi
+  curl "${auth_args[@]}" "$@"
+}
+
 bin_eval_post_json() {
   local base_url="$1"
   local path="$2"
   local payload="$3"
   local output="$4"
-  curl -fsS \
+  bin_eval_curl -fsS \
     -H 'Content-Type: application/json' \
     -X POST \
     --data "$payload" \
@@ -20,7 +28,7 @@ bin_eval_wait_for_api() {
 
   while ((SECONDS < deadline)); do
     local code
-    code="$(curl -sS -o /dev/null -w '%{http_code}' "${base_url}/checklists/00000000-0000-0000-0000-000000000000" || true)"
+    code="$(bin_eval_curl -sS -o /dev/null -w '%{http_code}' "${base_url}/checklists/00000000-0000-0000-0000-000000000000" || true)"
     if [[ "$code" != "000" ]]; then
       return 0
     fi
@@ -39,7 +47,7 @@ bin_eval_poll_entity() {
   local deadline=$((SECONDS + timeout_seconds))
 
   while ((SECONDS < deadline)); do
-    if ! curl -fsS "$url" -o "$output"; then
+    if ! bin_eval_curl -fsS "$url" -o "$output"; then
       sleep "$interval_seconds"
       continue
     fi

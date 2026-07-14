@@ -25,6 +25,11 @@ bin_eval_litellm_env_file() {
   printf '%s\n' "${LITELLM_ENV_FILE:-/home/kirill/p/litellm-chatgpt/.env}"
 }
 
+bin_eval_public_env_file() {
+  local root_dir="$1"
+  printf '%s\n' "${BIN_EVAL_PUBLIC_ENV_FILE:-${root_dir}/deploy/local/bin-eval-public.env}"
+}
+
 bin_eval_strip_quotes() {
   local value="$1"
   if [[ "$value" == \"*\" && "$value" == *\" ]]; then
@@ -113,6 +118,13 @@ bin_eval_load_local_env() {
       export BIN_EVAL_LLM_API_KEY="$LITELLM_MASTER_KEY"
     fi
   fi
+}
+
+bin_eval_load_public_env() {
+  local root_dir="$1"
+  local public_env_file
+  public_env_file="$(bin_eval_public_env_file "$root_dir")"
+  bin_eval_load_env_file "$public_env_file" true
 }
 
 bin_eval_systemd_mode() {

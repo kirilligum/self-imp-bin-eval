@@ -7,7 +7,7 @@ import (
 	"github.com/kirilligum/self-imp-bin-eval/internal/evalcore"
 )
 
-const QuestionRequirementsPrompt = "Questions must be binary yes/no checks, atomic, answer-independent, tied to one concrete requirement, and answerable from a future model answer. A yes answer always means the evaluated answer satisfies the evaluation requirement. Phrase exclusions as positive checks such as whether the answer avoids a prohibited claim. Never ask whether the answer is wrong, omits required content, or includes prohibited content."
+const QuestionRequirementsPrompt = "Questions must be binary yes/no checks, atomic, answer-independent, tied to one concrete requirement, and answerable from a future model answer. A yes answer always means the evaluated answer satisfies the evaluation requirement. Phrase exclusions as positive checks such as whether the answer avoids a prohibited claim. Never ask whether the answer is wrong, omits required content, or includes prohibited content. Details such as the actor, action, object or metric, ordering, exact value, and time or duration are separate checks when one can be independently omitted."
 
 type Message struct {
 	Role    string `json:"role"`
@@ -88,7 +88,7 @@ func BuildWeightAssignmentRequest(task, contextText, modelProfile string, questi
 		SchemaName:   "weight_assignment",
 		Schema:       WeightAssignmentSchema(limits, len(payloadQuestions)),
 		Messages: []Message{
-			{Role: "system", Content: "Assign one diagnostic split count to every supplied candidate question ID and explain each assignment. Use 0 to delete a question that is not useful, is semantically duplicate, or whose yes would indicate a defect rather than satisfaction. Use 1 when the question contains one atomic requirement. Use 2, 3, or 4 only when the question combines exactly that many independently judgeable requirements and should be split into that many questions. Count concrete facts, actions, or constraints that could be independently present or absent, even when they appear together in one rubric requirement."},
+			{Role: "system", Content: "Assign one diagnostic split count to every supplied candidate question ID and explain each assignment. Use 0 to delete a question that is not useful, is semantically duplicate, or whose yes would indicate a defect rather than satisfaction. Use 1 when the question contains one atomic requirement that cannot be partially satisfied. Use 2, 3, or 4 only when the question combines exactly that many independently judgeable requirements and should be split into that many questions. Treat the actor, action, object or metric, ordering, exact value, and time or duration as separate obligations when they could be independently present or absent. Do not call multiple obligations atomic merely because they appear together in one instruction or rubric requirement."},
 			{Role: "user", Content: mustJSON(payload)},
 		},
 	}

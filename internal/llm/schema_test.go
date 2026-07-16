@@ -68,6 +68,11 @@ func TestRubricRefinementSchemasAndPrompts(t *testing.T) {
 			if !strings.Contains(payload, QuestionRequirementsPrompt) {
 				t.Fatalf("%s prompt missing shared fragment %q: %s", req.PromptName, QuestionRequirementsPrompt, payload)
 			}
+			for _, required := range []string{"yes answer always means", "satisfies the evaluation requirement", "avoid", "Never ask whether the answer is wrong", "omits", "prohibited content"} {
+				if !strings.Contains(payload, required) {
+					t.Fatalf("%s prompt missing positive-orientation rule %q: %s", req.PromptName, required, payload)
+				}
+			}
 			for _, forbidden := range []string{"Generate 5 to 8", "strong answer", "weak answer", "Return only JSON", `"questions":[`} {
 				if strings.Contains(payload, forbidden) {
 					t.Fatalf("%s prompt contains forbidden %q: %s", req.PromptName, forbidden, payload)
@@ -81,7 +86,7 @@ func TestRubricRefinementSchemasAndPrompts(t *testing.T) {
 			{ID: "c1", DimensionID: "d1", Ordinal: 1, Rationale: "r", Question: "Does it mention alpha?"},
 		}, limits)
 		payload := marshalString(t, req)
-		for _, want := range []string{"split count", "0", "semantically duplicate", "1", "atomic", "2, 3, or 4", "independently judgeable"} {
+		for _, want := range []string{"split count", "0", "semantically duplicate", "yes would indicate a defect", "1", "atomic", "2, 3, or 4", "independently judgeable", "independently present or absent"} {
 			if !strings.Contains(payload, want) {
 				t.Fatalf("weight prompt missing %q: %s", want, payload)
 			}
@@ -101,7 +106,7 @@ func TestRubricRefinementSchemasAndPrompts(t *testing.T) {
 				t.Fatalf("judging prompt contains %q: %s", forbidden, payload)
 			}
 		}
-		for _, want := range []string{"q2", "Does it mention alpha?", "answer"} {
+		for _, want := range []string{"q2", "Does it mention alpha?", "answer", "yes contributes one satisfied point"} {
 			if !strings.Contains(payload, want) {
 				t.Fatalf("judging prompt missing %q: %s", want, payload)
 			}

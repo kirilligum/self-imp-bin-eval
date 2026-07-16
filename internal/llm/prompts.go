@@ -7,7 +7,7 @@ import (
 	"github.com/kirilligum/self-imp-bin-eval/internal/evalcore"
 )
 
-const QuestionRequirementsPrompt = "Questions must be binary yes/no checks, atomic, answer-independent, tied to one concrete requirement, and answerable from a future model answer."
+const QuestionRequirementsPrompt = "Questions must be binary yes/no checks, atomic, answer-independent, tied to one concrete requirement, and answerable from a future model answer. A yes answer always means the evaluated answer satisfies the evaluation requirement. Phrase exclusions as positive checks such as whether the answer avoids a prohibited claim. Never ask whether the answer is wrong, omits required content, or includes prohibited content."
 
 type Message struct {
 	Role    string `json:"role"`
@@ -88,7 +88,7 @@ func BuildWeightAssignmentRequest(task, contextText, modelProfile string, questi
 		SchemaName:   "weight_assignment",
 		Schema:       WeightAssignmentSchema(limits, len(payloadQuestions)),
 		Messages: []Message{
-			{Role: "system", Content: "Assign one diagnostic split count to every supplied candidate question ID and explain each assignment. Use 0 to delete a question that is not useful or is semantically duplicate. Use 1 when the question contains one atomic requirement. Use 2, 3, or 4 only when the question combines exactly that many independently judgeable requirements and should be split into that many questions."},
+			{Role: "system", Content: "Assign one diagnostic split count to every supplied candidate question ID and explain each assignment. Use 0 to delete a question that is not useful, is semantically duplicate, or whose yes would indicate a defect rather than satisfaction. Use 1 when the question contains one atomic requirement. Use 2, 3, or 4 only when the question combines exactly that many independently judgeable requirements and should be split into that many questions. Count concrete facts, actions, or constraints that could be independently present or absent, even when they appear together in one rubric requirement."},
 			{Role: "user", Content: mustJSON(payload)},
 		},
 	}
@@ -139,7 +139,7 @@ func BuildBinaryJudgingRequest(task, contextText, modelAnswer, modelProfile stri
 		SchemaName:   "binary_judging",
 		Schema:       BinaryJudgingSchema(len(payloadQuestions)),
 		Messages: []Message{
-			{Role: "system", Content: "For each supplied final question ID and text, judge whether the model answer directly satisfies it. Answer yes only when the model answer contains concrete evidence for the requirement; otherwise answer no. Explain the evidence for every judgment."},
+			{Role: "system", Content: "For each supplied final question ID and text, judge whether the model answer directly satisfies it. Because yes contributes one satisfied point, answer yes only when the model answer contains concrete evidence for the requirement; otherwise answer no. Explain the evidence for every judgment."},
 			{Role: "user", Content: mustJSON(payload)},
 		},
 	}

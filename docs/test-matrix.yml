@@ -56,7 +56,7 @@ groups: [lint, build, unit, race, integration, e2e, live, focused, plan, publica
 
 tests:
   - id: TEST-001
-    name: Rubric refinement LLM contracts
+    name: Rubric refinement LLM and score-orientation contracts
     requirements: [REQ-001, REQ-002, REQ-003, REQ-004, REQ-005, REQ-006, REQ-007, REQ-008, REQ-020, REQ-023]
     groups: [focused]
     files: [internal/llm/schema_test.go, internal/llm/prompts.go, internal/llm/schemas.go]
@@ -64,7 +64,7 @@ tests:
     discovery:
       packages: [./internal/llm]
       pattern: "^TestRubricRefinementSchemasAndPrompts$"
-    evidence: focused Go test output
+    evidence: prompt schema, shared score-positive question rules, reverse-polarity deletion, and compositional split contract output
     timeout_seconds: 120
 
   - id: TEST-002

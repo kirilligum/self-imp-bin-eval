@@ -272,7 +272,7 @@ tests:
     groups: [integration, plan]
     files: [scripts/test_public_gateway.sh, deploy/compose/nginx-public.conf.template, deploy/compose/docker-compose.yml, deploy/local/bin-eval-public.env.example, scripts/lib/http.sh]
     command: [scripts/test_public_gateway.sh]
-    evidence: isolated Nginx authentication, body limit, rate limit, and log output
+    evidence: isolated Nginx service document, security headers, authentication, body limit, rate limit, and log output
     timeout_seconds: 180
 
   - id: TEST-111
@@ -281,7 +281,7 @@ tests:
     groups: [public]
     files: [scripts/test_public_ingress.sh, scripts/status-public.sh, scripts/public-gateway.sh, docs/public-deployment.md, .github/workflows/ci.yml]
     command: [scripts/test_public_ingress.sh]
-    evidence: public health, authentication rejection, authorized API, Funnel, and redaction output
+    evidence: public service document, HTTPS security headers, health, authentication rejection, authorized API, Funnel, and redaction output
     timeout_seconds: 180
 
   - id: TEST-112

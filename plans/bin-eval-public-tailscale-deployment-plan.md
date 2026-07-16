@@ -39,7 +39,7 @@
 - Users: Kirill and authorized API clients running outside the host.
 - Value: A stable HTTPS endpoint usable by curl while retaining the existing local runtime and real LiteLLM path.
 - Business goals: Make the service externally callable, fail closed without credentials, survive reboot, retain evidence, and support operator rollback.
-- Success metrics: public health returns `204`; missing or invalid authorization returns `401`; valid authorization reaches the API; excess requests produce `429`; the full public curl workflow succeeds; secrets never appear in tracked files or diagnostics; all canonical gates and both CI jobs pass.
+- Success metrics: public root returns a non-sensitive JSON service document with HTTPS security headers; public health returns `204`; missing or invalid authorization returns JSON `401`; valid authorization reaches the API; excess requests produce `429`; the full public curl workflow succeeds; secrets never appear in tracked files or diagnostics; all canonical gates and both CI jobs pass.
 - Scope: Nginx gateway, public env contract, Tailscale Funnel lifecycle scripts, status and ingress tests, backup and rollback scripts, docs, verification manifest, Make targets, and live CI ingress validation.
 - Non-goals: custom domains, browser UI, OAuth, user accounts, multi-host failover, provider routing, changes to rubric/scoring behavior, and replacing existing Cloudflare or Caddy services owned by other repositories.
 - Dependencies: Docker Compose, `nginx:1.28.2-alpine`, Tailscale 1.98 or newer with Funnel capability, curl, jq, OpenSSL, systemd user services, existing bin-eval local services, and existing LiteLLM.
@@ -50,10 +50,10 @@
 
 - REQ-052 (security): The application API remains bound to `127.0.0.1:8080`; no Compose or systemd production change binds it to a public, LAN, or tailnet address.
 - REQ-053 (int): Tailscale Funnel exposes HTTPS port `8443` and forwards to one gateway bound to `127.0.0.1:18081`.
-- REQ-054 (security): The gateway returns `401` for missing or invalid bearer tokens and forwards valid requests to all four existing API routes.
+- REQ-054 (security): The gateway returns a JSON `401` bearer challenge for missing or invalid tokens and forwards valid requests to all four existing API routes; the non-sensitive root service document and health endpoint remain unauthenticated.
 - REQ-055 (security): The gateway limits request bodies to 1 MiB and applies a shared `10 requests/second` rate with burst `20`, returning `429` when exceeded.
 - REQ-056 (data): A 32-byte random bearer token is stored only in ignored mode-`0600` local configuration and GitHub Actions secrets; logs and status output contain no token value.
-- REQ-057 (reliability): Gateway and Funnel start, stop, status, and installation commands are idempotent and report actionable component state without exposing secrets.
+- REQ-057 (reliability): Gateway and Funnel start, stop, status, and installation commands are idempotent and report actionable component state without exposing secrets; public responses include HSTS and restrictive API security headers.
 - REQ-058 (int): The canonical curl runner can add the public bearer header without changing checklist, evaluation, or score assertions.
 - REQ-059 (reliability): Live CI verifies public health, authentication rejection, and authorized API reachability on the published commit after the local live quality gate.
 - REQ-060 (reliability): An operator backup captures all Postgres databases and stopped Garage metadata/data volumes with SHA-256 checksums while API and worker writes are suspended, then restores normal service state.
@@ -153,7 +153,7 @@ Impacted surfaces: `deploy/compose/docker-compose.yml`, `deploy/compose/nginx-pu
 Lifecycle evidence: committed config and Compose service; TEST-109 and TEST-110; validation proves the edge policy independent of Tailscale; configuration checkpoint is a rendered `nginx -t`; risks are proxy syntax and shared rate buckets.
 
 - P01.S01 Implement the public gateway and secret contract
-  - Action: Add the pinned Nginx service, loopback template, ignored public env example, bearer policy, size limit, rate limit, health route, redacted logs, and optional bearer support in the shared curl helper.
+  - Action: Add the pinned Nginx service, loopback template, ignored public env example, non-sensitive root service document, HTTPS security headers, JSON bearer policy, size limit, rate limit, health route, redacted logs, and optional bearer support in the shared curl helper.
   - Why now: This is the smallest implementation satisfying the failing contracts.
   - Files/surfaces: `deploy/compose/docker-compose.yml`, `deploy/compose/nginx-public.conf.template`, `deploy/local/bin-eval-public.env.example`, `.gitignore`, `scripts/lib/http.sh`, `scripts/lib/local_env.sh`.
   - Requirement link: REQ-052, REQ-054, REQ-055, REQ-056, REQ-058.
@@ -264,8 +264,8 @@ Phase metrics: Confidence 90%; long-term robustness 86%; internal interactions 5
 ```yaml
 - id: EVAL-001
   purpose: holdout
-  metrics: [public_health_status, unauthorized_status, authorized_api_status, public_smoke_invariant_success]
-  thresholds: {public_health_status: 204, unauthorized_status: 401, authorized_api_status: 404, public_smoke_invariant_success: 1}
+  metrics: [public_root_status, public_security_headers, public_health_status, unauthorized_status, authorized_api_status, public_smoke_invariant_success]
+  thresholds: {public_root_status: 200, public_security_headers: 1, public_health_status: 204, unauthorized_status: 401, authorized_api_status: 404, public_smoke_invariant_success: 1}
   seeds: [committed-smoke-fixtures]
   runtime_budget: 3600s
 ```
@@ -318,7 +318,7 @@ Phase metrics: Confidence 90%; long-term robustness 86%; internal interactions 5
   - command: `scripts/test_public_gateway.sh`
   - fixtures/mocks/data: isolated Nginx backend and fixed test token
   - deterministic controls: unique container names, fixed loopback ports, cleanup trap
-  - pass_criteria: health 204, missing/invalid 401, valid 200, oversized 413, burst includes 429, and logs omit token
+  - pass_criteria: root JSON 200 with security headers, health 204, missing/invalid JSON 401, valid 200, oversized 413, burst includes 429, and logs omit token
   - expected_runtime: 120 seconds
 - id: TEST-111
   - name: Public Tailscale ingress
@@ -328,7 +328,7 @@ Phase metrics: Confidence 90%; long-term robustness 86%; internal interactions 5
   - command: `scripts/test_public_ingress.sh`
   - fixtures/mocks/data: deployed Funnel URL and local public env
   - deterministic controls: bounded retries, fixed missing entity path, redacted output
-  - pass_criteria: health 204, missing/invalid 401, valid API 404, status identifies Funnel without secrets
+  - pass_criteria: root JSON 200 with security headers, health 204, missing/invalid JSON 401, valid API 404, and status identifies Funnel without secrets
   - expected_runtime: 120 seconds
 - id: TEST-011
   - name: Publication state

@@ -1,6 +1,8 @@
 # bin-eval Public Tailscale Deployment
 
-The production deployment runs on this computer. The application API remains on `127.0.0.1:8080`. A loopback-only Nginx gateway on `127.0.0.1:18081` enforces bearer authentication, a 1 MiB request limit, and a shared 10 requests/second rate with burst 20. Tailscale Funnel terminates HTTPS on public port `8443` and forwards to that gateway.
+The production deployment runs on this computer. The application API remains on `127.0.0.1:8080`. A loopback-only Nginx gateway on `127.0.0.1:18081` enforces bearer authentication, a 1 MiB request limit, a shared 10 requests/second rate with burst 20, and HTTPS security headers. Tailscale Funnel terminates publicly trusted HTTPS on port `8443` and forwards over host-local HTTP to that gateway; the loopback origin is not externally reachable.
+
+Opening the public URL at `/` returns a small JSON service document without exposing application data. `/healthz` remains the unauthenticated liveness endpoint. All checklist and evaluation routes require the bearer token and return a JSON `401` challenge when it is missing or invalid.
 
 The public API token is separate from GitHub, NPM, and LiteLLM credentials. It is generated into ignored mode-`0600` file `deploy/local/bin-eval-public.env` and copied to the GitHub Actions secret `BIN_EVAL_PUBLIC_BEARER_TOKEN` without printing its value.
 

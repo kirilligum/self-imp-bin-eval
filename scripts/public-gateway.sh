@@ -41,7 +41,7 @@ fi
 local_api_code="$(curl -sS -o /dev/null -w '%{http_code}' "http://127.0.0.1:8080/checklists/00000000-0000-0000-0000-000000000000" 2>/dev/null || true)"
 [[ "$local_api_code" == "404" ]] || { echo "local API is not ready: HTTP ${local_api_code:-000}" >&2; exit 1; }
 
-"${compose[@]}" up -d public-gateway
+"${compose[@]}" up -d --force-recreate public-gateway
 for _ in $(seq 1 60); do
   gateway_health="$(curl -sS -o /dev/null -w '%{http_code}' "http://127.0.0.1:${gateway_port}/healthz" 2>/dev/null || true)"
   [[ "$gateway_health" == "204" ]] && break

@@ -73,7 +73,27 @@ assert_code() {
 }
 
 assert_code 204 "${base_url}/healthz"
-assert_code 401 "${base_url}/checklists/missing"
+
+root_headers="${tmp_dir}/root-headers.txt"
+root_body="${tmp_dir}/root.json"
+root_code="$(curl -sS -D "$root_headers" -o "$root_body" -w '%{http_code}' "${base_url}/")"
+[[ "$root_code" == "200" ]] || { echo "root HTTP status ${root_code}, want 200" >&2; exit 1; }
+jq -e '.service == "bin-eval" and .authentication == "bearer" and .health == "/healthz"' "$root_body" >/dev/null
+for header in \
+  'strict-transport-security: max-age=31536000; includeSubDomains' \
+  'x-content-type-options: nosniff' \
+  'referrer-policy: no-referrer' \
+  'x-frame-options: DENY' \
+  "content-security-policy: default-src 'none'; frame-ancestors 'none'; base-uri 'none'"; do
+  grep -Fqi "$header" "$root_headers" || { echo "root response missing security header: ${header}" >&2; exit 1; }
+done
+
+missing_headers="${tmp_dir}/missing-headers.txt"
+missing_body="${tmp_dir}/missing.json"
+missing_code="$(curl -sS -D "$missing_headers" -o "$missing_body" -w '%{http_code}' "${base_url}/checklists/missing")"
+[[ "$missing_code" == "401" ]] || { echo "missing-token HTTP status ${missing_code}, want 401" >&2; exit 1; }
+jq -e '.error == "authorization_required"' "$missing_body" >/dev/null
+grep -Fqi 'www-authenticate: Bearer realm="bin-eval"' "$missing_headers" || { echo "401 response missing bearer challenge" >&2; exit 1; }
 assert_code 401 -H 'Authorization: Bearer invalid' "${base_url}/checklists/missing"
 
 response="$(curl -fsS -H "Authorization: Bearer ${token}" "${base_url}/checklists/missing")"
@@ -94,4 +114,4 @@ if grep -Fq "$token" <<<"$gateway_logs"; then
   exit 1
 fi
 
-printf 'public gateway behavior ok health=204 missing=401 invalid=401 valid=200 oversized=413 rate_limited=429 logs=redacted\n'
+printf 'public gateway behavior ok root=200 security_headers=present health=204 missing=401 invalid=401 valid=200 oversized=413 rate_limited=429 logs=redacted\n'

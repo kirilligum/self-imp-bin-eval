@@ -1,14 +1,14 @@
-# bin-eval Public Tailscale Deployment
+# bin-eval Public Cloudflare Deployment
 
-The production deployment runs on this computer. The application API remains on `127.0.0.1:8080`. A loopback-only Nginx gateway on `127.0.0.1:18081` enforces bearer authentication, a 1 MiB request limit, a shared 10 requests/second rate with burst 20, and HTTPS security headers. Tailscale Funnel terminates publicly trusted HTTPS on port `8443` and forwards over host-local HTTP to that gateway; the loopback origin is not externally reachable.
+The production deployment runs on this computer at `https://bin-eval.prls.co`. The application API remains on `127.0.0.1:8080`. A loopback-only Nginx gateway on `127.0.0.1:18081` enforces bearer authentication, a 1 MiB request limit, a shared 10 requests/second rate with burst 20, and HTTPS security headers. A dedicated Cloudflare Tunnel terminates publicly trusted HTTPS and reaches the gateway through the connector's host network; the loopback origin is not directly reachable from the network.
 
 Opening the public URL at `/` returns a small JSON service document without exposing application data. `/healthz` remains the unauthenticated liveness endpoint. All checklist and evaluation routes require the bearer token and return a JSON `401` challenge when it is missing or invalid.
 
-The public API token is separate from GitHub, NPM, and LiteLLM credentials. It is generated into ignored mode-`0600` file `deploy/local/bin-eval-public.env` and copied to the GitHub Actions secret `BIN_EVAL_PUBLIC_BEARER_TOKEN` without printing its value.
+The public API token is separate from Cloudflare, GitHub, NPM, and LiteLLM credentials. It is generated into ignored mode-`0600` file `deploy/local/bin-eval-public.env` and copied to the GitHub Actions secret `BIN_EVAL_PUBLIC_BEARER_TOKEN` without printing its value. The Cloudflare connector credential is stored separately in ignored mode-`0600` file `deploy/local/bin-eval-cloudflared-token`.
 
 ## Operator Commands
 
-Install or repair the local services, generate the public token, configure GitHub, and start Funnel:
+Install or repair the local services, generate the API token, provision Cloudflare DNS and the dedicated tunnel, configure GitHub, and start the public connector. `CLOUDFLARE_API_TOKEN` is needed only for provisioning and must have Zone Read, DNS Edit, and Cloudflare Tunnel Write permissions for `prls.co`. It can be exported for the command or stored in the ignored root `.env` file.
 
 ```fish
 make install-public
@@ -23,7 +23,7 @@ scripts/status-public.sh --json
 make stop-public
 ```
 
-`make stop-public` disables Funnel and stops Nginx. It does not stop the API, worker, Postgres, Temporal, Garage, or LiteLLM.
+`make stop-public` stops the Cloudflare connector and Nginx. It does not stop the API, worker, Postgres, Temporal, Garage, or LiteLLM. The DNS record remains provisioned, but there is no route to the loopback service while the connector is stopped.
 
 Create a consistent backup under ignored `backups/`:
 
@@ -71,4 +71,4 @@ make stop-public
 make status-local
 ```
 
-Rollback is complete when `funnel_active=false`, the gateway is stopped, and `make status-local` still reports active dependency, API, and worker services.
+Rollback is complete when `tunnel_active=false`, the gateway is stopped, and `make status-local` still reports active dependency, API, and worker services.

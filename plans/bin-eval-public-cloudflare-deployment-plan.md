@@ -1,25 +1,25 @@
-# bin-eval Public Tailscale Deployment Plan
+# bin-eval Public Cloudflare Deployment Plan
 
 ## 1. Title and metadata
 
 - Project name: bin-eval
-- Version: 1.0
+- Version: 2.0
 - Owners: Kirill Igum, bin-eval maintainers
-- Date: 2026-07-13
-- Document ID: BIN-EVAL-PUBLIC-TAILSCALE-001
-- Summary: Deploy the existing four-route bin-eval API from the `shaman` computer through Tailscale Funnel without changing rubric generation, scoring, Temporal workflows, persistence contracts, or the local development API. The production edge is a localhost-only Nginx gateway that enforces bearer authentication, request throttling, bounded request bodies, and redacted diagnostics before forwarding to the existing `127.0.0.1:8080` API. Tailscale terminates public TLS on port `8443` and forwards only to the gateway.
+- Date: 2026-07-20
+- Document ID: BIN-EVAL-PUBLIC-CLOUDFLARE-001
+- Summary: Deploy the existing four-route bin-eval API from the `shaman` computer through Cloudflare Tunnel without changing rubric generation, scoring, Temporal workflows, persistence contracts, or the local development API. The production edge is a localhost-only Nginx gateway that enforces bearer authentication, request throttling, bounded request bodies, and redacted diagnostics before forwarding to the existing `127.0.0.1:8080` API. Cloudflare terminates public TLS on standard HTTPS port `443` and forwards only to the gateway.
 
 ## 2. Design consensus and trade-offs
 
 - Topic: Production host
   - Verdict: DECISION
   - Rationale: The service runs on the existing `shaman` computer, where Postgres, Temporal, Garage, LiteLLM, the API, worker, and self-hosted GitHub Actions runner are already persistent and verified.
-- Topic: Tailscale Serve versus Funnel
+- Topic: Dedicated Cloudflare Tunnel
   - Verdict: DECISION
-  - Rationale: Funnel is required because callers outside the tailnet must reach the API. Serve is tailnet-only. Port `8443` isolates bin-eval from future port `443` services.
+  - Rationale: A remotely managed `shaman-bin-eval` tunnel gives `bin-eval.prls.co` one explicit ingress route without exposing a host port or coupling bin-eval to another repository's tunnel configuration.
 - Topic: Direct API exposure
   - Verdict: AGAINST
-  - Rationale: `BIN_EVAL_LISTEN_ADDR=127.0.0.1:8080` remains mandatory. Funnel targets an authenticated loopback gateway, never the unauthenticated application port.
+  - Rationale: `BIN_EVAL_LISTEN_ADDR=127.0.0.1:8080` remains mandatory. The host-network Cloudflare connector targets an authenticated loopback gateway, never the unauthenticated application port.
 - Topic: Authentication boundary
   - Verdict: DECISION
   - Rationale: A dedicated random bearer token is enforced by the ingress gateway for all four API routes. GitHub and NPM credentials are unrelated and must not be reused as API credentials.
@@ -40,35 +40,35 @@
 - Value: A stable HTTPS endpoint usable by curl while retaining the existing local runtime and real LiteLLM path.
 - Business goals: Make the service externally callable, fail closed without credentials, survive reboot, retain evidence, and support operator rollback.
 - Success metrics: public root returns a non-sensitive JSON service document with HTTPS security headers; public health returns `204`; missing or invalid authorization returns JSON `401`; valid authorization reaches the API; excess requests produce `429`; the full public curl workflow succeeds; secrets never appear in tracked files or diagnostics; all canonical gates and both CI jobs pass.
-- Scope: Nginx gateway, public env contract, Tailscale Funnel lifecycle scripts, status and ingress tests, backup and rollback scripts, docs, verification manifest, Make targets, and live CI ingress validation.
-- Non-goals: custom domains, browser UI, OAuth, user accounts, multi-host failover, provider routing, changes to rubric/scoring behavior, and replacing existing Cloudflare or Caddy services owned by other repositories.
-- Dependencies: Docker Compose, `nginx:1.28.2-alpine`, Tailscale 1.98 or newer with Funnel capability, curl, jq, OpenSSL, systemd user services, existing bin-eval local services, and existing LiteLLM.
-- Risks: Funnel may require an administrator approval; public requests share one gateway rate bucket because the HTTP proxy is loopback; host downtime makes the API unavailable; backup operations briefly stop API writes; exposed bearer tokens require rotation.
-- Assumptions: `shaman.tail71d19c.ts.net` remains the node DNS name; local API remains on `127.0.0.1:8080`; public HTTPS uses `8443`; Docker and user systemd start at boot; repository secrets can be configured through `gh`.
+- Scope: Nginx gateway, public env contract, Cloudflare Tunnel lifecycle scripts, status and ingress tests, backup and rollback scripts, docs, verification manifest, Make targets, and live CI ingress validation.
+- Non-goals: browser UI, OAuth, user accounts, multi-host failover, provider routing, changes to rubric/scoring behavior, and modifying Cloudflare or Caddy services owned by other repositories.
+- Dependencies: Docker Compose, `nginx:1.28.2-alpine`, digest-pinned `cloudflare/cloudflared` 2026.5.0, a Cloudflare provisioning token, curl, jq, OpenSSL, systemd user services, existing bin-eval local services, and existing LiteLLM.
+- Risks: the provisioning token may lack DNS or Tunnel Write permissions; public requests share one gateway rate bucket because the HTTP proxy is loopback; host downtime makes the API unavailable; backup operations briefly stop API writes; exposed bearer or tunnel tokens require rotation.
+- Assumptions: `bin-eval.prls.co` remains the canonical public hostname; local API remains on `127.0.0.1:8080`; Cloudflare serves public HTTPS on port `443`; Docker and user systemd start at boot; repository secrets can be configured through `gh`.
 
 ## 4. SRS / canonical requirements
 
-- REQ-052 (security): The application API remains bound to `127.0.0.1:8080`; no Compose or systemd production change binds it to a public, LAN, or tailnet address.
-- REQ-053 (int): Tailscale Funnel exposes HTTPS port `8443` and forwards to one gateway bound to `127.0.0.1:18081`.
+- REQ-052 (security): The application API remains bound to `127.0.0.1:8080`; no Compose or systemd production change binds it to a public or LAN address.
+- REQ-053 (int): Cloudflare Tunnel exposes standard HTTPS port `443` and forwards to one gateway bound to `127.0.0.1:18081`.
 - REQ-054 (security): The gateway returns a JSON `401` bearer challenge for missing or invalid tokens and forwards valid requests to all four existing API routes; the non-sensitive root service document and health endpoint remain unauthenticated.
 - REQ-055 (security): The gateway limits request bodies to 1 MiB and applies a shared `10 requests/second` rate with burst `20`, returning `429` when exceeded.
-- REQ-056 (data): A 32-byte random bearer token is stored only in ignored mode-`0600` local configuration and GitHub Actions secrets; logs and status output contain no token value.
-- REQ-057 (reliability): Gateway and Funnel start, stop, status, and installation commands are idempotent and report actionable component state without exposing secrets; public responses include HSTS and restrictive API security headers.
+- REQ-056 (data): A 32-byte random bearer token is stored only in ignored mode-`0600` local configuration and GitHub Actions secrets; the connector token is stored in a separate ignored mode-`0600` file; logs and status output contain neither token value.
+- REQ-057 (reliability): Gateway and tunnel start, stop, status, and installation commands are idempotent and report actionable component state without exposing secrets; public responses include HSTS and restrictive API security headers.
 - REQ-058 (int): The canonical curl runner can add the public bearer header without changing checklist, evaluation, or score assertions.
 - REQ-059 (reliability): Live CI verifies public health, authentication rejection, and authorized API reachability on the published commit after the local live quality gate.
 - REQ-060 (reliability): An operator backup captures all Postgres databases and stopped Garage metadata/data volumes with SHA-256 checksums while API and worker writes are suspended, then restores normal service state.
-- REQ-061 (reliability): Rollback disables Funnel and the gateway without stopping the loopback API, worker, dependencies, or LiteLLM.
+- REQ-061 (reliability): Rollback disables tunnel and the gateway without stopping the loopback API, worker, dependencies, or LiteLLM.
 
 Error handling and telemetry expectations:
 - Gateway access logs contain timestamp, method, URI, status, request duration, and remote address but never the Authorization header.
-- Start commands fail if the token is blank, local API is unreachable, gateway checks fail, Funnel cannot be configured, or public checks fail.
-- Status reports local gateway health, Funnel route, public URL, and authentication probe results with secret values redacted.
+- Start commands fail if the token is blank, local API is unreachable, gateway checks fail, tunnel cannot be configured, or public checks fail.
+- Status reports local gateway health, tunnel route, public URL, and authentication probe results with secret values redacted.
 - Backup failure triggers service restart through a trap and leaves an incomplete backup without a checksum manifest.
 
 ```mermaid
 flowchart LR
-  Client[Authorized curl client] -->|HTTPS :8443| Funnel[Tailscale Funnel]
-  Funnel -->|HTTP loopback| Gateway[Nginx :18081]
+  Client[Authorized curl client] -->|HTTPS :443| Tunnel[Cloudflare Tunnel]
+  Tunnel -->|HTTP loopback| Gateway[Nginx :18081]
   Gateway -->|Bearer valid| API[bin-eval API :8080]
   API --> Temporal[Temporal]
   Temporal --> Worker[bin-eval worker]
@@ -79,8 +79,8 @@ flowchart LR
 
 ```text
 [Public client]
-    | HTTPS :8443
-[Tailscale Funnel on shaman]
+    | HTTPS :443
+[Cloudflare Tunnel on shaman]
     | 127.0.0.1:18081
 [Nginx auth/rate gateway]
     | 127.0.0.1:8080
@@ -94,11 +94,11 @@ flowchart LR
 - Phase strategy: contract first, isolated gateway runtime second, host deployment third, public validation and publication last.
 - Compute controls: `branch_limits=2`, `reflection_passes=1`, `early_stop%=30`.
 - Standards tailoring note: This plan is standards-informed and does not claim ISO/IEEE/FAA compliance.
-- Suspension criteria: stop before Funnel activation if authentication or loopback binding tests fail; stop publication if external ingress or either CI job fails.
+- Suspension criteria: stop before tunnel activation if authentication or loopback binding tests fail; stop publication if external ingress or either CI job fails.
 - Resumption criteria: resume from the first failed TEST after the external capability, service, or credential issue is corrected.
 
 Risk register:
-- Funnel approval unavailable. Trigger: CLI requests admin approval. Mitigation: retain the healthy local gateway and resume after tailnet approval.
+- Cloudflare provisioning unavailable. Trigger: the API rejects zone, DNS, or tunnel operations. Mitigation: retain the healthy local gateway, correct the scoped token permissions, and rerun the idempotent installer.
 - Token leakage. Trigger: tracked secret, log match, or unredacted output. Mitigation: ignored `0600` file, exact log format, CI secret, and static checks.
 - Gateway blocks polling. Trigger: legitimate smoke receives `429`. Mitigation: 10 requests/second with burst 20, while canonical polling is one request every two seconds.
 - Backup inconsistency. Trigger: Garage write during volume copy. Mitigation: stop API/worker, then stop Garage before volume archive.
@@ -109,12 +109,12 @@ Phase goal: Make the selected topology and security invariants fail under automa
 
 Scope and objectives, including impacted requirements: REQ-052 through REQ-061.
 
-Impacted surfaces: `plans/bin-eval-public-tailscale-deployment-plan.md`, `docs/test-matrix.yml`, `scripts/validate_public_runtime_contract.sh`, `scripts/test_public_gateway.sh`, `Makefile`, and `.gitignore`.
+Impacted surfaces: `plans/bin-eval-public-cloudflare-deployment-plan.md`, `docs/test-matrix.yml`, `scripts/validate_public_runtime_contract.sh`, `scripts/test_public_gateway.sh`, `Makefile`, and `.gitignore`.
 
 Lifecycle evidence: requirements are this plan and manifest entries; design/code evidence is the expected file/command contract; verification uses TEST-109 and TEST-110; validation proves fail-closed design; configuration checkpoint is the P00 commit; risk is an incomplete contract; assumption is Docker availability.
 
 - P00.S01 Add failing public runtime contract coverage
-  - Action: Add TEST-109 assertions for commands, ignored secrets, loopback bindings, gateway controls, Funnel port, backup, rollback, docs, and CI wiring.
+  - Action: Add TEST-109 assertions for commands, ignored secrets, loopback bindings, gateway controls, Cloudflare DNS and tunnel provisioning, backup, rollback, docs, and CI wiring.
   - Why now: Every behavior change must be preceded by executable failing coverage.
   - Files/surfaces: `scripts/validate_public_runtime_contract.sh`, `docs/test-matrix.yml`.
   - Requirement link: REQ-052, REQ-053, REQ-054, REQ-055, REQ-056, REQ-057, REQ-059, REQ-060, REQ-061.
@@ -150,7 +150,7 @@ Scope and objectives, including impacted requirements: REQ-052, REQ-054, REQ-055
 
 Impacted surfaces: `deploy/compose/docker-compose.yml`, `deploy/compose/nginx-public.conf.template`, `deploy/local/bin-eval-public.env.example`, `.gitignore`, and HTTP helper scripts.
 
-Lifecycle evidence: committed config and Compose service; TEST-109 and TEST-110; validation proves the edge policy independent of Tailscale; configuration checkpoint is a rendered `nginx -t`; risks are proxy syntax and shared rate buckets.
+Lifecycle evidence: committed config and Compose service; TEST-109 and TEST-110; validation proves the edge policy independent of Cloudflare; configuration checkpoint is a rendered `nginx -t`; risks are proxy syntax and shared rate buckets.
 
 - P01.S01 Implement the public gateway and secret contract
   - Action: Add the pinned Nginx service, loopback template, ignored public env example, non-sensitive root service document, HTTPS security headers, JSON bearer policy, size limit, rate limit, health route, redacted logs, and optional bearer support in the shared curl helper.
@@ -183,13 +183,13 @@ Phase metrics: Confidence 92%; long-term robustness 88%; internal interactions 4
 
 ### Phase P02: Host operations are persistent and recoverable
 
-Phase goal: Install idempotent lifecycle, diagnostics, backup, and rollback commands around the gateway and Funnel.
+Phase goal: Install idempotent lifecycle, diagnostics, backup, and rollback commands around the gateway and tunnel.
 
 Scope and objectives, including impacted requirements: REQ-053, REQ-056, REQ-057, REQ-060, REQ-061.
 
 Impacted surfaces: `scripts/install-public.sh`, `scripts/public-gateway.sh`, `scripts/status-public.sh`, `scripts/backup-public.sh`, `scripts/test_public_ingress.sh`, `Makefile`, and `docs/public-deployment.md`.
 
-Lifecycle evidence: executable operator scripts and redacted JSON status; TEST-109 and TEST-111; validation proves restart/rollback and backup manifests; checkpoint is installed gateway plus Funnel status; risks are Funnel approval and backup downtime.
+Lifecycle evidence: executable operator scripts and redacted JSON status; TEST-109 and TEST-111; validation proves restart/rollback and backup manifests; checkpoint is installed gateway plus tunnel status; risks are Cloudflare permission errors and backup downtime.
 
 - P02.S01 Add failing host lifecycle assertions
   - Action: Extend TEST-109 to require idempotent install/start/status/stop/backup commands and exact security diagnostics.
@@ -204,7 +204,7 @@ Lifecycle evidence: executable operator scripts and redacted JSON status; TEST-1
   - Stop/escalate condition: Tests cannot distinguish start from rollback.
   - Unlocks: P02.S02.
 - P02.S02 Implement host lifecycle, backup, and rollback
-  - Action: Generate a random mode-0600 token, start the gateway, configure persistent Funnel, expose redacted status, create checksummed consistent backups, and disable only public exposure on stop.
+  - Action: Generate a random mode-0600 token, start the gateway, configure persistent tunnel, expose redacted status, create checksummed consistent backups, and disable only public exposure on stop.
   - Why now: Gateway policy is already verified in isolation.
   - Files/surfaces: lifecycle scripts, `Makefile`, `docs/public-deployment.md`.
   - Requirement link: REQ-053, REQ-056, REQ-057, REQ-060, REQ-061.
@@ -216,13 +216,13 @@ Lifecycle evidence: executable operator scripts and redacted JSON status; TEST-1
   - Stop/escalate condition: Backup cannot suspend writes or stop cannot preserve local service.
   - Unlocks: Phase P03.
 
-Exit gates: Proceed when lifecycle contract passes and local services remain healthy after rollback; escalate if Funnel permission requires administrator action; stop if token storage cannot be mode 0600.
+Exit gates: Proceed when lifecycle contract passes and local services remain healthy after rollback; escalate if the provisioning token lacks required permissions; stop if token storage cannot be mode 0600.
 
 Phase metrics: Confidence 88%; long-term robustness 85%; internal interactions 6; external interactions 2; complexity 48%; feature creep 8%; technical debt 5%; YAGNI 8/10; MoSCoW Must; local/non-local scope both; architectural changes count 1.
 
 ### Phase P03: Public curl and CI prove the published deployment
 
-Phase goal: Make an authenticated external curl call through Funnel and retain commit-addressed CI evidence.
+Phase goal: Make an authenticated external curl call through the Cloudflare Tunnel and retain commit-addressed CI evidence.
 
 Scope and objectives, including impacted requirements: REQ-053, REQ-054, REQ-058, REQ-059.
 
@@ -231,9 +231,9 @@ Impacted surfaces: `.github/workflows/ci.yml`, `scripts/test_public_ingress.sh`,
 Lifecycle evidence: external HTTPS results, canonical public curl summary, CI artifacts, and publication check; verification uses TEST-008, TEST-111, canonical gates, and TEST-011; checkpoint is published `master`; risks are model latency and DNS propagation.
 
 - P03.S01 Deploy and test the public route
-  - Action: Install the public token, start Nginx and Funnel, verify health/auth/rate controls, then run the canonical full curl workflow through the public URL.
+  - Action: Install the public token, start Nginx and tunnel, verify health/auth/rate controls, then run the canonical full curl workflow through the public URL.
   - Why now: Local behavior and lifecycle contracts are green.
-  - Files/surfaces: host runtime, `debug/public-curl/`, Tailscale Funnel state.
+  - Files/surfaces: host runtime, `debug/public-curl/`, Cloudflare Tunnel state.
   - Requirement link: REQ-053, REQ-054, REQ-058.
   - Verification link: TEST-008, TEST-111.
   - Verification mode: MEASURE.
@@ -255,7 +255,7 @@ Lifecycle evidence: external HTTPS results, canonical public curl summary, CI ar
   - Stop/escalate condition: Any required CI job or public probe fails.
   - Unlocks: Plan completion.
 
-Exit gates: Proceed when public TEST-008, TEST-111, all canonical gates, CI, and TEST-011 pass; escalate on tailnet approval or DNS propagation; stop on unauthenticated public access.
+Exit gates: Proceed when public TEST-008, TEST-111, all canonical gates, CI, and TEST-011 pass; escalate on Cloudflare permission errors or DNS propagation; stop on unauthenticated public access.
 
 Phase metrics: Confidence 90%; long-term robustness 86%; internal interactions 5; external interactions 4; complexity 45%; feature creep 4%; technical debt 3%; YAGNI 9/10; MoSCoW Must; local/non-local scope both; architectural changes count 0.
 
@@ -321,14 +321,14 @@ Phase metrics: Confidence 90%; long-term robustness 86%; internal interactions 5
   - pass_criteria: root JSON 200 with security headers, health 204, missing/invalid JSON 401, valid 200, oversized 413, burst includes 429, and logs omit token
   - expected_runtime: 120 seconds
 - id: TEST-111
-  - name: Public Tailscale ingress
+  - name: Public Cloudflare ingress
   - type: e2e
   - verifies: REQ-053, REQ-054, REQ-056, REQ-057, REQ-059, REQ-061
   - location: `scripts/test_public_ingress.sh`
   - command: `scripts/test_public_ingress.sh`
-  - fixtures/mocks/data: deployed Funnel URL and local public env
+  - fixtures/mocks/data: deployed tunnel URL and local public env
   - deterministic controls: bounded retries, fixed missing entity path, redacted output
-  - pass_criteria: root JSON 200 with security headers, health 204, missing/invalid JSON 401, valid API 404, and status identifies Funnel without secrets
+  - pass_criteria: root JSON 200 with security headers, health 204, missing/invalid JSON 401, valid API 404, and status identifies tunnel without secrets
   - expected_runtime: 120 seconds
 - id: TEST-011
   - name: Publication state
@@ -343,19 +343,19 @@ Phase metrics: Confidence 90%; long-term robustness 86%; internal interactions 5
 
 ### 7.4 Manual checks
 
-No manual check is an acceptance gate. Tailnet administrator approval, if prompted by Tailscale, is an external capability prerequisite.
+No manual check is an acceptance gate. A scoped Cloudflare API token with Zone Read, DNS Edit, and Tunnel Write permissions is an external capability prerequisite.
 
 ## 8. Data contract
 
-- Public env schema: `BIN_EVAL_PUBLIC_BEARER_TOKEN`, `BIN_EVAL_PUBLIC_GATEWAY_PORT`, `BIN_EVAL_PUBLIC_HTTPS_PORT`, `BIN_EVAL_PUBLIC_BACKEND_URL`, and derived `BIN_EVAL_PUBLIC_URL`.
-- Invariants: token length is at least 64 hexadecimal characters; gateway/backend are loopback; HTTPS port is 8443; public status is redacted.
+- Public env schema: `BIN_EVAL_PUBLIC_BEARER_TOKEN`, `BIN_EVAL_PUBLIC_GATEWAY_PORT`, `BIN_EVAL_PUBLIC_BACKEND_URL`, `BIN_EVAL_PUBLIC_HOSTNAME`, `BIN_EVAL_PUBLIC_URL`, `BIN_EVAL_CLOUDFLARED_TUNNEL_NAME`, `BIN_EVAL_CLOUDFLARED_ORIGIN`, `BIN_EVAL_CLOUDFLARED_LOG_LEVEL`, `BIN_EVAL_CLOUDFLARED_UID`, and `BIN_EVAL_CLOUDFLARED_GID`.
+- Invariants: token length is at least 64 hexadecimal characters; gateway/backend are loopback; public hostname is bin-eval.prls.co; public status is redacted.
 - Privacy/data quality constraints: Authorization and model content are absent from gateway logs; backup files are mode 0600 and checksum-addressed.
 
 ## 9. Reproducibility
 
 - Seeds: fixed gateway token in TEST-110 only; production token from `openssl rand -hex 32`.
 - Hardware assumptions: current x86_64 Linux host with Docker.
-- OS/driver/container tag: host Tailscale 1.98.4 or newer; `nginx:1.28.2-alpine`.
+- OS/driver/container tag: `cloudflare/cloudflared` 2026.5.0 by digest; `nginx:1.28.2-alpine`.
 - Relevant environment variables: all public env schema fields plus existing `BIN_EVAL_URL` and `BIN_EVAL_SYSTEMD_MODE`.
 
 ## 10. Requirements Traceability Matrix
@@ -386,7 +386,7 @@ No manual check is an acceptance gate. Tailnet administrator approval, if prompt
 
 ## 12. Appendix: ADR index
 
-- ADR-PUBLIC-001: Use Tailscale Funnel port 8443 on the existing host.
+- ADR-PUBLIC-001: Use a dedicated Cloudflare Tunnel and `bin-eval.prls.co` on the existing host.
 - ADR-PUBLIC-002: Enforce bearer auth and throttling in one loopback Nginx gateway.
 - ADR-PUBLIC-003: Reuse the canonical curl workflow for public quality validation.
 

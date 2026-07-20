@@ -4,7 +4,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "${ROOT_DIR}/scripts/lib/local_env.sh"
-bin_eval_require_tools curl jq tailscale
+bin_eval_require_tools curl docker jq
 
 if [[ -z "${BIN_EVAL_PUBLIC_URL:-}" || -z "${BIN_EVAL_PUBLIC_BEARER_TOKEN:-}" ]]; then
   bin_eval_load_public_env "$ROOT_DIR"
@@ -52,7 +52,7 @@ jq -e '
   .gateway.health_http_code == "204" and
   .gateway.unauthorized_http_code == "401" and
   .gateway.authorized_api_http_code == "404" and
-  .funnel.active == true and
+  .tunnel.active == true and
   .public_health_http_code == "204" and
   .secrets == "redacted"
 ' <<<"$status_json" >/dev/null
@@ -61,4 +61,4 @@ if grep -Fq "$BIN_EVAL_PUBLIC_BEARER_TOKEN" <<<"$status_json"; then
   exit 1
 fi
 
-echo "public ingress ok root=200 security_headers=present health=204 missing=401 invalid=401 authorized_api=404 funnel=active token=redacted"
+echo "public ingress ok root=200 security_headers=present health=204 missing=401 invalid=401 authorized_api=404 tunnel=active token=redacted"

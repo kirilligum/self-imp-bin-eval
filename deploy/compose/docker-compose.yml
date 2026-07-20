@@ -124,6 +124,28 @@ services:
       retries: 12
       start_period: 2s
 
+  cloudflared:
+    profiles: ["public"]
+    image: cloudflare/cloudflared@sha256:59bab8d3aceec09bf6bdb07d6beca0225ca5cd7ab79436a87ea97978fe1dc4f9
+    user: "${BIN_EVAL_CLOUDFLARED_UID:-65532}:${BIN_EVAL_CLOUDFLARED_GID:-65532}"
+    network_mode: host
+    restart: unless-stopped
+    command:
+      - tunnel
+      - --no-autoupdate
+      - --loglevel
+      - ${BIN_EVAL_CLOUDFLARED_LOG_LEVEL:-info}
+      - run
+      - --token-file
+      - /run/secrets/tunnel-token
+    depends_on:
+      public-gateway:
+        condition: service_healthy
+    volumes:
+      - ../local/bin-eval-cloudflared-token:/run/secrets/tunnel-token:ro
+    labels:
+      co.prls.service: bin-eval-public-tunnel
+
 volumes:
   postgres-data:
   garage-meta:

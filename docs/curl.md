@@ -1,6 +1,6 @@
 # bin-eval Curl Path
 
-`bin-eval` binds locally to `127.0.0.1:8080` by default. The production endpoint is an authenticated Tailscale Funnel route documented in `docs/public-deployment.md`. Both endpoints start workflows through Temporal, and the worker calls the existing LiteLLM Responses API at `http://127.0.0.1:4000/v1/responses` with model `gpt-5.4-mini`.
+`bin-eval` binds locally to `127.0.0.1:8080` by default. The production endpoint is the authenticated Cloudflare Tunnel route `https://bin-eval.prls.co`, documented in `docs/public-deployment.md`. Both endpoints start workflows through Temporal, and the worker calls the existing LiteLLM Responses API at `http://127.0.0.1:4000/v1/responses` with model `gpt-5.4-mini`.
 
 The current API is asynchronous. The curl workflow is therefore a sequence:
 

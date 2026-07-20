@@ -17,6 +17,7 @@ done
 for file in \
   deploy/compose/nginx-public.conf.template \
   deploy/local/bin-eval-public.env.example \
+  scripts/configure-cloudflare.sh \
   scripts/install-public.sh \
   scripts/public-gateway.sh \
   scripts/status-public.sh \
@@ -27,6 +28,7 @@ for file in \
 done
 
 grep -Eq '^deploy/local/bin-eval-public\.env$' .gitignore || fail "public secret env must be ignored"
+grep -Eq '^deploy/local/bin-eval-cloudflared-token$' .gitignore || fail "Cloudflare tunnel token must be ignored"
 grep -Eq '127\.0\.0\.1:8080' deploy/local/bin-eval.env.example || fail "application API must remain on loopback"
 grep -Eq '127\.0\.0\.1:\$\{BIN_EVAL_PUBLIC_GATEWAY_PORT\}' deploy/compose/nginx-public.conf.template || fail "gateway must bind to loopback"
 grep -Eq 'limit_req_zone .*rate=10r/s' deploy/compose/nginx-public.conf.template || fail "gateway rate limit is missing"
@@ -36,10 +38,18 @@ grep -Fq 'Strict-Transport-Security "max-age=31536000; includeSubDomains"' deplo
 grep -Fq "Content-Security-Policy \"default-src 'none'; frame-ancestors 'none'; base-uri 'none'\"" deploy/compose/nginx-public.conf.template || fail "gateway content security policy is missing"
 grep -Fq "return 200 '{\"service\":\"bin-eval\",\"authentication\":\"bearer\",\"health\":\"/healthz\"}'" deploy/compose/nginx-public.conf.template || fail "public service document is missing"
 grep -Fq "return 401 '{\"error\":\"authorization_required\"}'" deploy/compose/nginx-public.conf.template || fail "JSON authorization challenge is missing"
-grep -Eq 'BIN_EVAL_PUBLIC_HTTPS_PORT=8443' deploy/local/bin-eval-public.env.example || fail "public HTTPS port must be 8443"
-grep -Eq 'tailscale funnel .*--bg' scripts/public-gateway.sh || fail "persistent Funnel start is missing"
-grep -Eq 'tailscale funnel .* off' scripts/public-gateway.sh || fail "Funnel rollback is missing"
-grep -Eq 'up -d --force-recreate public-gateway' scripts/public-gateway.sh || fail "gateway start must apply the current rendered configuration"
+grep -Eq 'BIN_EVAL_PUBLIC_HOSTNAME=bin-eval\.prls\.co' deploy/local/bin-eval-public.env.example || fail "canonical public hostname is missing"
+grep -Eq 'BIN_EVAL_PUBLIC_URL=https://bin-eval\.prls\.co' deploy/local/bin-eval-public.env.example || fail "canonical public URL is missing"
+grep -Eq 'BIN_EVAL_CLOUDFLARED_TUNNEL_NAME=shaman-bin-eval' deploy/local/bin-eval-public.env.example || fail "dedicated tunnel name is missing"
+grep -Eq 'BIN_EVAL_CLOUDFLARED_ORIGIN=http://127\.0\.0\.1:18081' deploy/local/bin-eval-public.env.example || fail "loopback tunnel origin is missing"
+grep -Eq 'cloudflare/cloudflared@sha256:' deploy/compose/docker-compose.yml || fail "cloudflared image must be digest-pinned"
+grep -Eq 'user:.*BIN_EVAL_CLOUDFLARED_UID.*BIN_EVAL_CLOUDFLARED_GID' deploy/compose/docker-compose.yml || fail "cloudflared must run as the host token owner"
+grep -Eq 'network_mode: host' deploy/compose/docker-compose.yml || fail "public connector must share the loopback network namespace"
+grep -Eq 'bin-eval-cloudflared-token:/run/secrets/tunnel-token:ro' deploy/compose/docker-compose.yml || fail "cloudflared token must be mounted read-only"
+grep -Eq 'cfd_tunnel/.*/configurations' scripts/configure-cloudflare.sh || fail "Cloudflare ingress provisioning is missing"
+grep -Eq 'cfargotunnel\.com' scripts/configure-cloudflare.sh || fail "Cloudflare DNS tunnel target is missing"
+grep -Eq 'up -d --force-recreate public-gateway cloudflared' scripts/public-gateway.sh || fail "public start must apply gateway and tunnel configuration"
+grep -Eq 'stop cloudflared public-gateway' scripts/public-gateway.sh || fail "public rollback must stop tunnel and gateway"
 grep -Eq 'pg_dumpall' scripts/backup-public.sh || fail "Postgres backup is missing"
 grep -Eq 'garage-meta' scripts/backup-public.sh || fail "Garage metadata backup is missing"
 grep -Eq 'garage-data' scripts/backup-public.sh || fail "Garage data backup is missing"
@@ -55,6 +65,13 @@ fi
 if grep -REn 'GITHUB_TOKEN|GITHUB_PAT|NPM_TOKEN' deploy docs scripts .github \
   --exclude='*.example' --exclude='validate_public_runtime_contract.sh' >/dev/null; then
   fail "GitHub or NPM credentials must not be used by public deployment"
+fi
+
+if rg -n 'tailscale|Tailscale|funnel|Funnel|tail71d19c' \
+  deploy/compose/docker-compose.yml deploy/local/bin-eval-public.env.example \
+  scripts/install-public.sh scripts/public-gateway.sh scripts/status-public.sh \
+  scripts/test_public_ingress.sh docs/public-deployment.md docs/curl.md >/dev/null; then
+  fail "legacy Tailscale public ingress references remain"
 fi
 
 echo "public runtime contract ok"

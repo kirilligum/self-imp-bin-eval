@@ -261,7 +261,7 @@ tests:
     name: Public runtime contract
     requirements: [REQ-052, REQ-053, REQ-054, REQ-055, REQ-056, REQ-057, REQ-058, REQ-059, REQ-060, REQ-061]
     groups: [lint, plan]
-    files: [scripts/validate_public_runtime_contract.sh, plans/bin-eval-public-tailscale-deployment-plan.md]
+    files: [scripts/validate_public_runtime_contract.sh, plans/bin-eval-public-cloudflare-deployment-plan.md]
     command: [scripts/validate_public_runtime_contract.sh]
     evidence: static public deployment contract output
     timeout_seconds: 60
@@ -276,12 +276,12 @@ tests:
     timeout_seconds: 180
 
   - id: TEST-111
-    name: Public Tailscale ingress
+    name: Public Cloudflare ingress
     requirements: [REQ-053, REQ-054, REQ-056, REQ-057, REQ-059, REQ-061]
     groups: [public]
     files: [scripts/test_public_ingress.sh, scripts/status-public.sh, scripts/public-gateway.sh, docs/public-deployment.md, .github/workflows/ci.yml]
     command: [scripts/test_public_ingress.sh]
-    evidence: public service document, HTTPS security headers, health, authentication rejection, authorized API, Funnel, and redaction output
+    evidence: public service document, HTTPS security headers, health, authentication rejection, authorized API, Cloudflare Tunnel, and redaction output
     timeout_seconds: 180
 
   - id: TEST-112

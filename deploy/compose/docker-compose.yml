@@ -28,6 +28,11 @@ services:
       POSTGRES_PWD: ${BIN_EVAL_POSTGRES_PASSWORD}
       DBNAME: temporal
       VISIBILITY_DBNAME: temporal_visibility
+      # The shared agent network reaches this existing Temporal container
+      # through a second interface.  Bind the server on all container
+      # interfaces while retaining the primary address as its broadcast
+      # address, so both Compose projects use the same Temporal daemon.
+      BIND_ON_IP: 0.0.0.0
     ports:
       - "127.0.0.1:7233:7233"
 

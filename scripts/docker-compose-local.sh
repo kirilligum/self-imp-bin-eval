@@ -17,4 +17,24 @@ if [[ "${BIN_EVAL_DOCKER_COMPOSE_IN_SG:-}" != "1" ]] &&
   exec sg docker -c "$command_line"
 fi
 
-exec docker compose --env-file "$BIN_EVAL_ENV_FILE" -f "${ROOT_DIR}/deploy/compose/docker-compose.yml" "$@"
+case "${BIN_EVAL_COMPOSE_MODE:-local}" in
+  local)
+    exec docker compose --env-file "$BIN_EVAL_ENV_FILE" -f "${ROOT_DIR}/deploy/compose/docker-compose.yml" "$@"
+    ;;
+  test)
+    export BIN_EVAL_POSTGRES_PORT="${BIN_EVAL_TEST_POSTGRES_PORT:-55433}"
+    export BIN_EVAL_TEMPORAL_PORT="${BIN_EVAL_TEST_TEMPORAL_PORT:-7234}"
+    export BIN_EVAL_TEST_GARAGE_PORT="${BIN_EVAL_TEST_GARAGE_PORT:-23900}"
+    export BIN_EVAL_TEST_LLM_PORT="${BIN_EVAL_TEST_LLM_PORT:-24000}"
+    exec docker compose \
+      --project-name "${BIN_EVAL_TEST_PROJECT:-bin-eval-test}" \
+      --env-file "$BIN_EVAL_ENV_FILE" \
+      -f "${ROOT_DIR}/deploy/compose/docker-compose.yml" \
+      -f "${ROOT_DIR}/deploy/test/compose.app.yml" \
+      --profile test --profile app --profile deterministic "$@"
+    ;;
+  *)
+    echo "unsupported BIN_EVAL_COMPOSE_MODE: ${BIN_EVAL_COMPOSE_MODE}" >&2
+    exit 2
+    ;;
+esac

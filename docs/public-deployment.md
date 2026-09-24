@@ -23,15 +23,11 @@ scripts/status-public.sh --json
 make stop-public
 ```
 
-`make stop-public` stops the Cloudflare connector and Nginx. It does not stop the API, worker, Postgres, Temporal, Garage, or LiteLLM. The DNS record remains provisioned, but there is no route to the loopback service while the connector is stopped.
+`make stop-public` stops the Cloudflare connector and Nginx. It does not stop the API, worker, Postgres, Temporal, shared Garage, or LiteLLM. The DNS record remains provisioned, but there is no route to the loopback service while the connector is stopped.
 
-Create a consistent backup under ignored `backups/`:
-
-```fish
-make backup-public
-```
-
-The backup briefly disables public ingress, stops API and worker writes, stops Temporal and Garage, writes a compressed dump of every Postgres database, archives the stopped Garage metadata and data volumes, writes `SHA256SUMS`, and restores the prior service state.
+The API and worker use the shared Garage S3 endpoint at
+`http://127.0.0.1:3900`. Bin Eval provides no database, artifact, or Garage
+backup command; its persistent application data is intentionally disposable.
 
 ## Public Curl
 

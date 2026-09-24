@@ -49,7 +49,6 @@ requirements:
   - REQ-057
   - REQ-058
   - REQ-059
-  - REQ-060
   - REQ-061
 
 groups: [lint, build, unit, race, integration, e2e, live, focused, plan, publication, public]
@@ -80,7 +79,7 @@ tests:
     name: Postgres persistence and migrations
     requirements: [REQ-013, REQ-030, REQ-031, REQ-032, REQ-033, REQ-034, REQ-036, REQ-047, REQ-048]
     groups: [focused]
-    files: [internal/db/db_integration_test.go, internal/db/store.go, migrations]
+    files: [internal/db/db_integration_test.go, internal/db/store.go, migrations, scripts/run_go_integration.sh, scripts/wait-for-temporal.sh]
     command: [scripts/run_go_integration.sh, ./internal/db]
     evidence: Postgres integration output
     timeout_seconds: 300
@@ -89,7 +88,7 @@ tests:
     name: Garage artifact persistence
     requirements: [REQ-022, REQ-035, REQ-037, REQ-041]
     groups: [focused]
-    files: [internal/artifacts/artifacts_integration_test.go, internal/artifacts/export.go, internal/artifacts/export_test.go, internal/artifacts/keys.go, internal/artifacts/writer.go]
+    files: [internal/artifacts/artifacts_integration_test.go, internal/artifacts/export.go, internal/artifacts/export_test.go, internal/artifacts/keys.go, internal/artifacts/writer.go, scripts/run_go_integration.sh, scripts/wait-for-temporal.sh]
     command: [scripts/run_go_integration.sh, ./internal/artifacts]
     evidence: Garage integration output
     timeout_seconds: 300
@@ -134,7 +133,7 @@ tests:
     name: OpenAI-compatible full-stack curl smoke
     requirements: [REQ-012, REQ-025, REQ-040, REQ-044, REQ-048, REQ-050]
     groups: [e2e, live]
-    files: [scripts/run_e2e.sh, scripts/smoke_curl.sh, scripts/lib/http.sh, scripts/validate_smoke_invariants.sh, scripts/capture_artifacts.sh, internal/cmd/captureartifacts/main.go]
+    files: [scripts/run_e2e.sh, scripts/smoke_curl.sh, scripts/lib/http.sh, scripts/validate_smoke_invariants.sh, scripts/capture_artifacts.sh, scripts/docker-compose-local.sh, scripts/wait-for-temporal.sh, internal/cmd/captureartifacts/main.go]
     command: [scripts/run_e2e.sh]
     evidence: configured debug directory captures, invariant report, and exact artifact manifest
     timeout_seconds: 3600
@@ -143,7 +142,7 @@ tests:
     name: Full integration regression
     requirements: [REQ-030, REQ-031, REQ-032, REQ-033, REQ-034, REQ-035, REQ-036, REQ-037]
     groups: [integration]
-    files: [internal/db/db_integration_test.go, internal/artifacts/artifacts_integration_test.go]
+    files: [internal/db/db_integration_test.go, internal/artifacts/artifacts_integration_test.go, scripts/run_go_integration.sh, scripts/wait-for-temporal.sh]
     command: [scripts/run_go_integration.sh, ./internal/db, ./internal/artifacts]
     evidence: combined persistence integration output
     timeout_seconds: 600
@@ -185,7 +184,7 @@ tests:
     name: Structured terminal workflow failures
     requirements: [REQ-024, REQ-036]
     groups: [plan]
-    files: [internal/db/db_integration_test.go, internal/api/api_test.go, internal/workflows/workflow_test.go]
+    files: [internal/db/db_integration_test.go, internal/api/api_test.go, internal/workflows/workflow_test.go, scripts/run_go_integration.sh, scripts/wait-for-temporal.sh]
     command: [scripts/run_go_integration.sh, ./internal/db, ./internal/api, ./internal/workflows, -run, "^TestP06StructuredWorkflowFailures$"]
     discovery:
       packages: [./internal/db, ./internal/api, ./internal/workflows]
@@ -198,7 +197,7 @@ tests:
     name: Temporal start and terminal idempotency
     requirements: [REQ-047]
     groups: [plan]
-    files: [internal/api/api_test.go, internal/db/db_integration_test.go, internal/workflows/workflow_test.go]
+    files: [internal/api/api_test.go, internal/db/db_integration_test.go, internal/workflows/workflow_test.go, scripts/run_go_integration.sh, scripts/wait-for-temporal.sh]
     command: [scripts/run_go_integration.sh, ./internal/api, ./internal/db, ./internal/workflows, -run, "^TestP06TemporalIdempotency$"]
     discovery:
       packages: [./internal/api, ./internal/db, ./internal/workflows]
@@ -211,7 +210,7 @@ tests:
     name: Exact attempt-aware LLM artifacts
     requirements: [REQ-035, REQ-037]
     groups: [plan]
-    files: [internal/llm/client_test.go, internal/activities/llm_test.go, internal/artifacts/artifacts_integration_test.go]
+    files: [internal/llm/client_test.go, internal/activities/llm_test.go, internal/artifacts/artifacts_integration_test.go, scripts/run_go_integration.sh, scripts/wait-for-temporal.sh]
     command: [scripts/run_go_integration.sh, ./internal/llm, ./internal/activities, ./internal/artifacts, -run, "^TestP06ExactLLMArtifacts$"]
     discovery:
       packages: [./internal/llm, ./internal/activities, ./internal/artifacts]
@@ -224,7 +223,7 @@ tests:
     name: Request-level repeated evaluation
     requirements: [REQ-013, REQ-021, REQ-048]
     groups: [plan]
-    files: [internal/evalcore/score_test.go, internal/workflows/evaluate_answer_test.go, internal/api/api_test.go, internal/db/db_integration_test.go, docs/curl.md]
+    files: [internal/evalcore/score_test.go, internal/workflows/evaluate_answer_test.go, internal/api/api_test.go, internal/db/db_integration_test.go, docs/curl.md, scripts/run_go_integration.sh, scripts/wait-for-temporal.sh]
     command: [scripts/run_go_integration.sh, ./internal/evalcore, ./internal/workflows, ./internal/api, ./internal/db, -run, "^TestP06RepeatedEvaluation$"]
     discovery:
       packages: [./internal/evalcore, ./internal/workflows, ./internal/api, ./internal/db]
@@ -237,7 +236,7 @@ tests:
     name: Self-contained deterministic and live CI
     requirements: [REQ-025, REQ-050]
     groups: [plan]
-    files: [.dockerignore, internal/verification/manifest_test.go, .github/workflows/ci.yml, deploy/compose/docker-compose.yml, deploy/compose/Dockerfile, cmd/bin-eval-llm-fixture/main.go, cmd/bin-eval-llm-fixture/main_test.go, scripts/install-live-ci-runner.sh, scripts/run_e2e.sh, scripts/smoke_curl.sh, scripts/lib/http.sh, scripts/capture_artifacts.sh, scripts/validate_local_runtime_contract.sh, scripts/validate_docs_curl.sh, Makefile]
+    files: [.dockerignore, internal/verification/manifest_test.go, .github/workflows/ci.yml, deploy/compose/docker-compose.yml, deploy/compose/Dockerfile, cmd/bin-eval-llm-fixture/main.go, cmd/bin-eval-llm-fixture/main_test.go, scripts/install-live-ci-runner.sh, scripts/run_e2e.sh, scripts/smoke_curl.sh, scripts/docker-compose-local.sh, scripts/wait-for-temporal.sh, scripts/lib/http.sh, scripts/capture_artifacts.sh, scripts/validate_local_runtime_contract.sh, scripts/validate_docs_curl.sh, Makefile]
     command: [go, test, ./internal/verification, -run, "^TestP06CIContract$", -count=1]
     discovery:
       packages: [./internal/verification]
@@ -249,7 +248,7 @@ tests:
     name: Canonical executable curl workflow
     requirements: [REQ-012, REQ-025, REQ-044, REQ-046, REQ-048, REQ-050, REQ-051]
     groups: [plan]
-    files: [docs/test-matrix.yml, internal/verification/manifest_test.go, Makefile, .github/workflows/ci.yml, scripts/smoke_curl.sh, scripts/run_e2e.sh, scripts/validate_docs_curl.sh, scripts/validate_local_runtime_contract.sh, docs/curl.md]
+    files: [docs/test-matrix.yml, internal/verification/manifest_test.go, Makefile, .github/workflows/ci.yml, scripts/smoke_curl.sh, scripts/run_e2e.sh, scripts/docker-compose-local.sh, scripts/wait-for-temporal.sh, scripts/validate_docs_curl.sh, scripts/validate_local_runtime_contract.sh, docs/curl.md]
     command: [go, test, ./internal/verification, -run, "^TestP07CanonicalCurlRunner$", -count=1]
     discovery:
       packages: [./internal/verification]
@@ -259,9 +258,9 @@ tests:
 
   - id: TEST-109
     name: Public runtime contract
-    requirements: [REQ-052, REQ-053, REQ-054, REQ-055, REQ-056, REQ-057, REQ-058, REQ-059, REQ-060, REQ-061]
+    requirements: [REQ-052, REQ-053, REQ-054, REQ-055, REQ-056, REQ-057, REQ-058, REQ-059, REQ-061]
     groups: [lint, plan]
-    files: [scripts/validate_public_runtime_contract.sh, plans/bin-eval-public-cloudflare-deployment-plan.md]
+    files: [scripts/validate_public_runtime_contract.sh, plans/bin-eval-public-cloudflare-deployment-plan.md, Makefile, docs/public-deployment.md]
     command: [scripts/validate_public_runtime_contract.sh]
     evidence: static public deployment contract output
     timeout_seconds: 60

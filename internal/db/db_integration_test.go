@@ -444,7 +444,7 @@ func openTestPool(t *testing.T, ctx context.Context) *pgxpool.Pool {
 	t.Helper()
 	databaseURL := os.Getenv("BIN_EVAL_DATABASE_URL")
 	if databaseURL == "" {
-		databaseURL = "postgres://bin_eval:bin_eval@127.0.0.1:55432/bin_eval?sslmode=disable"
+		databaseURL = "postgres://bin_eval:bin_eval@127.0.0.1:55433/bin_eval?sslmode=disable"
 	}
 	var pool *pgxpool.Pool
 	var err error

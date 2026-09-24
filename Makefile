@@ -1,6 +1,6 @@
 SHELL := /usr/bin/env bash
 
-.PHONY: lint build test test-race test-integration test-e2e verify-plan verify-release install-local install-live-ci-runner start-local stop-local status-local test-live-curl install-public start-public stop-public status-public backup-public test-public-gateway test-public-ingress test-public-curl
+.PHONY: lint build test test-race test-integration test-e2e verify-plan verify-release install-local install-live-ci-runner start-local stop-local status-local test-live-curl install-public start-public stop-public status-public test-public-gateway test-public-ingress test-public-curl
 
 lint:
 	go run ./internal/cmd/verifyplan --manifest docs/test-matrix.yml --groups lint
@@ -55,9 +55,6 @@ stop-public:
 
 status-public:
 	scripts/status-public.sh
-
-backup-public:
-	scripts/backup-public.sh
 
 test-public-gateway:
 	go run ./internal/cmd/verifyplan --manifest docs/test-matrix.yml --test TEST-110

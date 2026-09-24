@@ -10,9 +10,15 @@ fail() {
   exit 1
 }
 
-for target in install-public start-public stop-public status-public backup-public test-public-gateway test-public-ingress test-public-curl; do
+for target in install-public start-public stop-public status-public test-public-gateway test-public-ingress test-public-curl; do
   grep -Eq "^${target}:" Makefile || fail "missing Makefile target: ${target}"
 done
+if grep -Eq '^backup-public:' Makefile; then fail "storage backup tooling is outside the supported runtime contract"; fi
+[[ ! -e scripts/backup-public.sh ]] || fail "storage backup script must not be present"
+if rg -n 'make backup-public|scripts/backup-public\.sh|backups/' Makefile docs/public-deployment.md .github scripts \
+  --glob '!validate_public_runtime_contract.sh' >/dev/null; then
+  fail "unsupported storage backup instructions or tooling remain"
+fi
 
 for file in \
   deploy/compose/nginx-public.conf.template \
@@ -21,7 +27,6 @@ for file in \
   scripts/install-public.sh \
   scripts/public-gateway.sh \
   scripts/status-public.sh \
-  scripts/backup-public.sh \
   scripts/test_public_ingress.sh \
   docs/public-deployment.md; do
   [[ -f "$file" ]] || fail "missing public deployment file: ${file}"
@@ -30,6 +35,7 @@ done
 grep -Eq '^deploy/local/bin-eval-public\.env$' .gitignore || fail "public secret env must be ignored"
 grep -Eq '^deploy/local/bin-eval-cloudflared-token$' .gitignore || fail "Cloudflare tunnel token must be ignored"
 grep -Eq '127\.0\.0\.1:8080' deploy/local/bin-eval.env.example || fail "application API must remain on loopback"
+grep -Fq 'BIN_EVAL_GARAGE_ENDPOINT=http://127.0.0.1:3900' deploy/compose/.env.example || fail "local services must use the shared Garage loopback endpoint"
 grep -Eq '127\.0\.0\.1:\$\{BIN_EVAL_PUBLIC_GATEWAY_PORT\}' deploy/compose/nginx-public.conf.template || fail "gateway must bind to loopback"
 grep -Eq 'limit_req_zone .*rate=10r/s' deploy/compose/nginx-public.conf.template || fail "gateway rate limit is missing"
 grep -Eq 'client_max_body_size 1m' deploy/compose/nginx-public.conf.template || fail "gateway body limit is missing"
@@ -50,10 +56,6 @@ grep -Eq 'cfd_tunnel/.*/configurations' scripts/configure-cloudflare.sh || fail 
 grep -Eq 'cfargotunnel\.com' scripts/configure-cloudflare.sh || fail "Cloudflare DNS tunnel target is missing"
 grep -Eq 'up -d --force-recreate public-gateway cloudflared' scripts/public-gateway.sh || fail "public start must apply gateway and tunnel configuration"
 grep -Eq 'stop cloudflared public-gateway' scripts/public-gateway.sh || fail "public rollback must stop tunnel and gateway"
-grep -Eq 'pg_dumpall' scripts/backup-public.sh || fail "Postgres backup is missing"
-grep -Eq 'garage-meta' scripts/backup-public.sh || fail "Garage metadata backup is missing"
-grep -Eq 'garage-data' scripts/backup-public.sh || fail "Garage data backup is missing"
-grep -Eq 'sha256sum' scripts/backup-public.sh || fail "backup checksums are missing"
 grep -Eq 'Public ingress gate' .github/workflows/ci.yml || fail "live CI public ingress gate is missing"
 grep -Eq 'BIN_EVAL_PUBLIC_BEARER_TOKEN' scripts/lib/http.sh || fail "canonical curl helper cannot authenticate publicly"
 grep -Eq '^function bin_eval_curl$' docs/curl.md || fail "documented curl sequence cannot authenticate publicly"

@@ -15,6 +15,7 @@ bin_eval_load_local_env "$ROOT_DIR"
 bin_eval_systemctl "$MODE" start bin-eval-deps.service
 "${ROOT_DIR}/scripts/wait-for-tcp.sh" 127.0.0.1 "${BIN_EVAL_POSTGRES_PORT:-55432}" 120
 "${ROOT_DIR}/scripts/wait-for-tcp.sh" 127.0.0.1 7233 180
+"${ROOT_DIR}/scripts/wait-for-temporal.sh"
 "${ROOT_DIR}/scripts/wait-for-tcp.sh" 127.0.0.1 3900 120
 
 bin_eval_systemctl "$MODE" start bin-eval-worker.service

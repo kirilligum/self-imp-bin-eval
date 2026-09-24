@@ -14,6 +14,14 @@ jobs:
   deterministic:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    env:
+      BIN_EVAL_COMPOSE_MODE: test
+      BIN_EVAL_ENV_FILE: deploy/compose/.env.example
+      BIN_EVAL_TEST_PROJECT: bin-eval-ci-${{ github.run_id }}
+      BIN_EVAL_TEST_POSTGRES_PORT: "55433"
+      BIN_EVAL_TEST_TEMPORAL_PORT: "7234"
+      BIN_EVAL_TEST_GARAGE_PORT: "23900"
+      BIN_EVAL_TEST_LLM_PORT: "24000"
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
@@ -30,7 +38,7 @@ jobs:
           BIN_EVAL_LLM_API_KEY: deterministic-fixture
           BIN_EVAL_MODEL_PROFILE: deterministic-fixture
           BIN_EVAL_GIT_SHA: ${{ github.sha }}
-        run: docker compose --env-file deploy/compose/.env.example -f deploy/compose/docker-compose.yml --profile app --profile deterministic up -d --build
+        run: scripts/docker-compose-local.sh --profile app --profile deterministic up -d --build
       - name: Curl full-stack evaluation
         env:
           BIN_EVAL_LLM_BASE_URL: http://llm-fixture:4000
@@ -43,7 +51,10 @@ jobs:
         run: make test-e2e
       - name: Capture container logs
         if: always()
-        run: mkdir -p debug && docker compose --env-file deploy/compose/.env.example -f deploy/compose/docker-compose.yml --profile app --profile deterministic logs --no-color > debug/compose.log
+        run: mkdir -p debug && scripts/docker-compose-local.sh --profile app --profile deterministic logs --no-color > debug/compose.log
+      - name: Stop deterministic test stack
+        if: always()
+        run: scripts/docker-compose-local.sh down --volumes --remove-orphans
       - uses: actions/upload-artifact@v7
         if: always()
         with:
@@ -55,6 +66,14 @@ jobs:
     needs: deterministic
     runs-on: [self-hosted, linux, x64, bin-eval-live]
     timeout-minutes: 90
+    env:
+      BIN_EVAL_COMPOSE_MODE: test
+      BIN_EVAL_ENV_FILE: deploy/compose/.env.example
+      BIN_EVAL_TEST_PROJECT: bin-eval-live-${{ github.run_id }}
+      BIN_EVAL_TEST_POSTGRES_PORT: "55433"
+      BIN_EVAL_TEST_TEMPORAL_PORT: "7234"
+      BIN_EVAL_TEST_GARAGE_PORT: "23900"
+      BIN_EVAL_TEST_LLM_PORT: "24000"
     steps:
       - uses: actions/checkout@v7
       - name: Require live LLM configuration
@@ -67,8 +86,8 @@ jobs:
         env:
           BIN_EVAL_LLM_CONTAINER: ${{ vars.BIN_EVAL_LLM_CONTAINER }}
         run: |
-          docker compose --env-file deploy/compose/.env.example -f deploy/compose/docker-compose.yml up -d postgres temporal garage
-          network="$(docker network ls --filter label=com.docker.compose.project=compose --filter label=com.docker.compose.network=default --format '{{.Name}}')"
+          scripts/docker-compose-local.sh up -d postgres temporal garage
+          network="$(docker network ls --filter label=com.docker.compose.project="$BIN_EVAL_TEST_PROJECT" --filter label=com.docker.compose.network=default --format '{{.Name}}')"
           test -n "$network"
           if ! docker inspect "$BIN_EVAL_LLM_CONTAINER" --format '{{json .NetworkSettings.Networks}}' | jq -e --arg network "$network" 'has($network)' >/dev/null; then
             docker network connect --alias bin-eval-litellm "$network" "$BIN_EVAL_LLM_CONTAINER"
@@ -79,7 +98,7 @@ jobs:
           BIN_EVAL_LLM_API_KEY: ${{ secrets.BIN_EVAL_LLM_API_KEY }}
           BIN_EVAL_MODEL_PROFILE: ${{ vars.BIN_EVAL_MODEL_PROFILE }}
           BIN_EVAL_GIT_SHA: ${{ github.sha }}
-        run: docker compose --env-file deploy/compose/.env.example -f deploy/compose/docker-compose.yml --profile app up -d --build
+        run: scripts/docker-compose-local.sh --profile app up -d --build
       - name: Curl live full-stack evaluation
         env:
           BIN_EVAL_LLM_BASE_URL: ${{ secrets.BIN_EVAL_LLM_BASE_URL }}
@@ -97,12 +116,12 @@ jobs:
         run: make test-public-ingress
       - name: Capture container logs
         if: always()
-        run: mkdir -p debug && docker compose --env-file deploy/compose/.env.example -f deploy/compose/docker-compose.yml --profile app logs --no-color > debug/compose.log
+        run: mkdir -p debug && scripts/docker-compose-local.sh --profile app logs --no-color > debug/compose.log
       - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: live-${{ github.sha }}
           path: debug/
-      - name: Stop live app containers
+      - name: Stop live test stack
         if: always()
-        run: docker compose --env-file deploy/compose/.env.example -f deploy/compose/docker-compose.yml --profile app stop api worker && docker compose --env-file deploy/compose/.env.example -f deploy/compose/docker-compose.yml --profile app rm -f api worker
+        run: scripts/docker-compose-local.sh down --volumes --remove-orphans

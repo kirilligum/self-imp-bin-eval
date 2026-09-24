@@ -35,7 +35,7 @@ func TestP06CIContract(t *testing.T) {
 	require.Contains(t, live.If, "release")
 	require.Contains(t, string(workflowPayload), "runs-on: [self-hosted, linux, x64, bin-eval-live]")
 	require.Contains(t, string(workflowPayload), "docker network connect --alias bin-eval-litellm")
-	require.Contains(t, string(workflowPayload), "Stop live app containers")
+	require.Contains(t, string(workflowPayload), "Stop live test stack")
 	actionCounts := make(map[string]int)
 	for _, job := range workflow.Jobs {
 		for _, step := range job.Steps {
@@ -90,12 +90,64 @@ func TestP06CIContract(t *testing.T) {
 	require.NoError(t, err)
 	var compose struct {
 		Services map[string]map[string]any `yaml:"services"`
+		Volumes  map[string]any            `yaml:"volumes"`
 	}
 	require.NoError(t, yaml.Unmarshal(composePayload, &compose))
-	for _, service := range []string{"postgres", "temporal", "garage", "api", "worker", "llm-fixture"} {
+	for _, service := range []string{"postgres", "temporal", "public-gateway", "cloudflared"} {
 		require.Contains(t, compose.Services, service)
 	}
-	require.Equal(t, compose.Services["api"]["build"], compose.Services["worker"]["build"])
+	require.Contains(t, compose.Services["temporal"], "healthcheck", "host and Compose clients must wait for Temporal readiness, not just an open TCP port")
+	for _, service := range []string{"garage", "api", "worker", "llm-fixture"} {
+		require.NotContains(t, compose.Services, service, "test-only service %s must not be in the persistent dependency Compose", service)
+	}
+	require.NotContains(t, compose.Volumes, "garage-meta")
+	require.NotContains(t, compose.Volumes, "garage-data")
+
+	testComposePayload, err := os.ReadFile(filepath.Join(root, "deploy", "test", "compose.app.yml"))
+	require.NoError(t, err)
+	var testCompose struct {
+		Services map[string]map[string]any `yaml:"services"`
+	}
+	require.NoError(t, yaml.Unmarshal(testComposePayload, &testCompose))
+	for _, service := range []string{"garage", "api", "worker", "llm-fixture"} {
+		require.Contains(t, testCompose.Services, service)
+	}
+	for _, service := range []string{"api", "worker"} {
+		dependencies, ok := testCompose.Services[service]["depends_on"].(map[string]any)
+		require.True(t, ok, "%s dependencies must be explicit", service)
+		temporal, ok := dependencies["temporal"].(map[string]any)
+		require.True(t, ok, "%s must wait for Temporal", service)
+		require.Equal(t, "service_healthy", temporal["condition"], "%s must not start against an unready Temporal server", service)
+	}
+	require.Equal(t, []any{"test"}, testCompose.Services["garage"]["profiles"])
+	require.Contains(t, testCompose.Services["garage"], "tmpfs", "test Garage data must be ephemeral")
+	require.Equal(t, testCompose.Services["api"]["build"], testCompose.Services["worker"]["build"])
+
+	depsUnit, err := os.ReadFile(filepath.Join(root, "deploy", "systemd", "bin-eval-deps.service.in"))
+	require.NoError(t, err)
+	require.NotContains(t, string(depsUnit), "garage", "normal host services must not own or stop the shared Garage")
+
+	integrationRunner, err := os.ReadFile(filepath.Join(root, "scripts", "run_go_integration.sh"))
+	require.NoError(t, err)
+	require.Contains(t, string(integrationRunner), "docker-compose-local.sh")
+	require.Contains(t, string(integrationRunner), "BIN_EVAL_COMPOSE_MODE=test")
+	require.Contains(t, string(integrationRunner), "bin-eval-test")
+	require.NotContains(t, string(integrationRunner), "127.0.0.1:3900")
+
+	composeRunner, err := os.ReadFile(filepath.Join(root, "scripts", "docker-compose-local.sh"))
+	require.NoError(t, err)
+	require.Contains(t, string(composeRunner), "deploy/test/compose.app.yml")
+	require.Contains(t, string(composeRunner), "--project-name")
+	require.Contains(t, string(composeRunner), "--profile test")
+	require.Contains(t, string(composeRunner), "--profile app", "test cleanup must include API/worker profile services")
+	require.Contains(t, string(composeRunner), "--profile deterministic", "test cleanup must include the deterministic LLM fixture")
+
+	for _, path := range []string{"scripts/start-local.sh", "scripts/run_go_integration.sh", "scripts/smoke_curl.sh"} {
+		payload, readErr := os.ReadFile(filepath.Join(root, path))
+		require.NoError(t, readErr)
+		require.Contains(t, string(payload), "scripts/wait-for-temporal.sh", "%s must wait for Temporal readiness", path)
+	}
+
 	dockerfilePayload, err := os.ReadFile(filepath.Join(root, "deploy", "compose", "Dockerfile"))
 	require.NoError(t, err)
 	require.Contains(t, string(dockerfilePayload), "COPY --from=build /src/migrations /migrations")
@@ -150,9 +202,15 @@ func TestP07CanonicalCurlRunner(t *testing.T) {
 	runner := readRepositoryFile(t, root, "scripts/run_e2e.sh")
 	require.Contains(t, runner, "bin_eval_load_local_env \"$ROOT_DIR\"")
 	require.Contains(t, runner, "BIN_EVAL_LOAD_LOCAL_ENV")
+	require.Contains(t, runner, "BIN_EVAL_TEST_GARAGE_PORT is required for artifact capture")
+	require.Contains(t, runner, `BIN_EVAL_GARAGE_ENDPOINT="http://127.0.0.1:${BIN_EVAL_TEST_GARAGE_PORT}"`, "external-stack artifact capture must use the isolated Garage port")
+	require.Contains(t, runner, "BIN_EVAL_E2E_PARENT=true", "the runner must own temporary storage until artifact capture finishes")
+	require.Contains(t, runner, "trap cleanup_test_stack EXIT")
+	require.Contains(t, runner, "scripts/docker-compose-local.sh down --volumes --remove-orphans")
 	smoke := readRepositoryFile(t, root, "scripts/smoke_curl.sh")
 	require.Contains(t, smoke, "BIN_EVAL_DEBUG_DIR")
 	require.Contains(t, smoke, "BIN_EVAL_EXTERNAL_STACK")
+	require.Contains(t, smoke, "BIN_EVAL_E2E_PARENT", "the child smoke runner must leave its Garage available for artifact capture")
 
 	docs := readRepositoryFile(t, root, "docs/curl.md")
 	require.NotContains(t, docs, "scripts/live_curl_example.sh")

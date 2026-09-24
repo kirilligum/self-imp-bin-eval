@@ -1,5 +1,18 @@
 # bin-eval Public Cloudflare Deployment Plan
 
+## 0. Decision amendment — 2026-09-24
+
+The user chose a lean service with no backup tooling and accepted loss of
+Bin Eval's persistent application state. The former backup requirement
+REQ-060 is retired. No backup command, archive script, recovery workflow, or
+storage snapshot is part of the supported deployment. Shared Garage stores
+artifacts without a Bin Eval recovery guarantee. LLM traces needed for
+observability remain owned by the configured Langfuse service.
+
+The implementation record below is retained for its still-active public
+ingress requirements. Any older backup-related wording is superseded by this
+amendment.
+
 ## 1. Title and metadata
 
 - Project name: bin-eval
@@ -40,10 +53,10 @@
 - Value: A stable HTTPS endpoint usable by curl while retaining the existing local runtime and real LiteLLM path.
 - Business goals: Make the service externally callable, fail closed without credentials, survive reboot, retain evidence, and support operator rollback.
 - Success metrics: public root returns a non-sensitive JSON service document with HTTPS security headers; public health returns `204`; missing or invalid authorization returns JSON `401`; valid authorization reaches the API; excess requests produce `429`; the full public curl workflow succeeds; secrets never appear in tracked files or diagnostics; all canonical gates and both CI jobs pass.
-- Scope: Nginx gateway, public env contract, Cloudflare Tunnel lifecycle scripts, status and ingress tests, backup and rollback scripts, docs, verification manifest, Make targets, and live CI ingress validation.
+- Scope: Nginx gateway, public env contract, Cloudflare Tunnel lifecycle scripts, status and ingress tests, rollback, docs, verification manifest, Make targets, and live CI ingress validation.
 - Non-goals: browser UI, OAuth, user accounts, multi-host failover, provider routing, changes to rubric/scoring behavior, and modifying Cloudflare or Caddy services owned by other repositories.
 - Dependencies: Docker Compose, `nginx:1.28.2-alpine`, digest-pinned `cloudflare/cloudflared` 2026.5.0, a Cloudflare provisioning token, curl, jq, OpenSSL, systemd user services, existing bin-eval local services, and existing LiteLLM.
-- Risks: the provisioning token may lack DNS or Tunnel Write permissions; public requests share one gateway rate bucket because the HTTP proxy is loopback; host downtime makes the API unavailable; backup operations briefly stop API writes; exposed bearer or tunnel tokens require rotation.
+- Risks: the provisioning token may lack DNS or Tunnel Write permissions; public requests share one gateway rate bucket because the HTTP proxy is loopback; host downtime makes the API unavailable; exposed bearer or tunnel tokens require rotation; Bin Eval's persistent state has no recovery procedure by design.
 - Assumptions: `bin-eval.prls.co` remains the canonical public hostname; local API remains on `127.0.0.1:8080`; Cloudflare serves public HTTPS on port `443`; Docker and user systemd start at boot; repository secrets can be configured through `gh`.
 
 ## 4. SRS / canonical requirements
@@ -56,14 +69,13 @@
 - REQ-057 (reliability): Gateway and tunnel start, stop, status, and installation commands are idempotent and report actionable component state without exposing secrets; public responses include HSTS and restrictive API security headers.
 - REQ-058 (int): The canonical curl runner can add the public bearer header without changing checklist, evaluation, or score assertions.
 - REQ-059 (reliability): Live CI verifies public health, authentication rejection, and authorized API reachability on the published commit after the local live quality gate.
-- REQ-060 (reliability): An operator backup captures all Postgres databases and stopped Garage metadata/data volumes with SHA-256 checksums while API and worker writes are suspended, then restores normal service state.
+- REQ-060: Retired by the 2026-09-24 user decision; Bin Eval does not provide backup or restore tooling.
 - REQ-061 (reliability): Rollback disables tunnel and the gateway without stopping the loopback API, worker, dependencies, or LiteLLM.
 
 Error handling and telemetry expectations:
 - Gateway access logs contain timestamp, method, URI, status, request duration, and remote address but never the Authorization header.
 - Start commands fail if the token is blank, local API is unreachable, gateway checks fail, tunnel cannot be configured, or public checks fail.
 - Status reports local gateway health, tunnel route, public URL, and authentication probe results with secret values redacted.
-- Backup failure triggers service restart through a trap and leaves an incomplete backup without a checksum manifest.
 
 ```mermaid
 flowchart LR
@@ -101,7 +113,6 @@ Risk register:
 - Cloudflare provisioning unavailable. Trigger: the API rejects zone, DNS, or tunnel operations. Mitigation: retain the healthy local gateway, correct the scoped token permissions, and rerun the idempotent installer.
 - Token leakage. Trigger: tracked secret, log match, or unredacted output. Mitigation: ignored `0600` file, exact log format, CI secret, and static checks.
 - Gateway blocks polling. Trigger: legitimate smoke receives `429`. Mitigation: 10 requests/second with burst 20, while canonical polling is one request every two seconds.
-- Backup inconsistency. Trigger: Garage write during volume copy. Mitigation: stop API/worker, then stop Garage before volume archive.
 
 ### Phase P00: Public deployment contract is executable
 
@@ -114,10 +125,10 @@ Impacted surfaces: `plans/bin-eval-public-cloudflare-deployment-plan.md`, `docs/
 Lifecycle evidence: requirements are this plan and manifest entries; design/code evidence is the expected file/command contract; verification uses TEST-109 and TEST-110; validation proves fail-closed design; configuration checkpoint is the P00 commit; risk is an incomplete contract; assumption is Docker availability.
 
 - P00.S01 Add failing public runtime contract coverage
-  - Action: Add TEST-109 assertions for commands, ignored secrets, loopback bindings, gateway controls, Cloudflare DNS and tunnel provisioning, backup, rollback, docs, and CI wiring.
+  - Action: Add TEST-109 assertions for commands, ignored secrets, loopback bindings, gateway controls, Cloudflare DNS and tunnel provisioning, rollback, docs, CI wiring, and absence of backup tooling.
   - Why now: Every behavior change must be preceded by executable failing coverage.
   - Files/surfaces: `scripts/validate_public_runtime_contract.sh`, `docs/test-matrix.yml`.
-  - Requirement link: REQ-052, REQ-053, REQ-054, REQ-055, REQ-056, REQ-057, REQ-059, REQ-060, REQ-061.
+  - Requirement link: REQ-052, REQ-053, REQ-054, REQ-055, REQ-056, REQ-057, REQ-059, REQ-061.
   - Verification link: TEST-109.
   - Verification mode: RED.
   - Command/procedure: `make verify-plan TEST=TEST-109`.
@@ -181,21 +192,21 @@ Exit gates: Proceed when TEST-109 and TEST-110 pass; escalate on Nginx runtime i
 
 Phase metrics: Confidence 92%; long-term robustness 88%; internal interactions 4; external interactions 1; complexity 38%; feature creep 3%; technical debt 3%; YAGNI 9/10; MoSCoW Must; local/non-local scope local; architectural changes count 1.
 
-### Phase P02: Host operations are persistent and recoverable
+### Phase P02: Host lifecycle and ingress control
 
-Phase goal: Install idempotent lifecycle, diagnostics, backup, and rollback commands around the gateway and tunnel.
+Phase goal: Install idempotent lifecycle, diagnostics, and rollback commands around the gateway and tunnel.
 
-Scope and objectives, including impacted requirements: REQ-053, REQ-056, REQ-057, REQ-060, REQ-061.
+Scope and objectives, including impacted requirements: REQ-053, REQ-056, REQ-057, REQ-061.
 
-Impacted surfaces: `scripts/install-public.sh`, `scripts/public-gateway.sh`, `scripts/status-public.sh`, `scripts/backup-public.sh`, `scripts/test_public_ingress.sh`, `Makefile`, and `docs/public-deployment.md`.
+Impacted surfaces: `scripts/install-public.sh`, `scripts/public-gateway.sh`, `scripts/status-public.sh`, `scripts/test_public_ingress.sh`, `Makefile`, and `docs/public-deployment.md`.
 
-Lifecycle evidence: executable operator scripts and redacted JSON status; TEST-109 and TEST-111; validation proves restart/rollback and backup manifests; checkpoint is installed gateway plus tunnel status; risks are Cloudflare permission errors and backup downtime.
+Lifecycle evidence: executable operator scripts and redacted JSON status; TEST-109 and TEST-111; validation proves restart and rollback; checkpoint is installed gateway plus tunnel status; risks are Cloudflare permission errors and intentional lack of persistent-state recovery.
 
 - P02.S01 Add failing host lifecycle assertions
-  - Action: Extend TEST-109 to require idempotent install/start/status/stop/backup commands and exact security diagnostics.
+  - Action: Extend TEST-109 to require idempotent install/start/status/stop commands, exact security diagnostics, and no backup command.
   - Why now: Host behavior needs a binding contract before scripts are implemented.
   - Files/surfaces: `scripts/validate_public_runtime_contract.sh`.
-  - Requirement link: REQ-053, REQ-056, REQ-057, REQ-060, REQ-061.
+  - Requirement link: REQ-053, REQ-056, REQ-057, REQ-061.
   - Verification link: TEST-109.
   - Verification mode: RED.
   - Command/procedure: `make verify-plan TEST=TEST-109`.
@@ -203,17 +214,17 @@ Lifecycle evidence: executable operator scripts and redacted JSON status; TEST-1
   - Evidence produced: focused static output.
   - Stop/escalate condition: Tests cannot distinguish start from rollback.
   - Unlocks: P02.S02.
-- P02.S02 Implement host lifecycle, backup, and rollback
-  - Action: Generate a random mode-0600 token, start the gateway, configure persistent tunnel, expose redacted status, create checksummed consistent backups, and disable only public exposure on stop.
+- P02.S02 Implement host lifecycle and rollback
+  - Action: Generate a random mode-0600 token, start the gateway, configure persistent tunnel, expose redacted status, and disable only public exposure on stop.
   - Why now: Gateway policy is already verified in isolation.
   - Files/surfaces: lifecycle scripts, `Makefile`, `docs/public-deployment.md`.
-  - Requirement link: REQ-053, REQ-056, REQ-057, REQ-060, REQ-061.
+  - Requirement link: REQ-053, REQ-056, REQ-057, REQ-061.
   - Verification link: TEST-109, TEST-111.
   - Verification mode: GREEN.
   - Command/procedure: `make verify-plan TEST=TEST-109`.
   - Expected result: Contract passes and scripts emit no secret values.
-  - Evidence produced: script output, status JSON schema, backup manifest.
-  - Stop/escalate condition: Backup cannot suspend writes or stop cannot preserve local service.
+  - Evidence produced: script output and status JSON schema.
+  - Stop/escalate condition: stop cannot preserve local service.
   - Unlocks: Phase P03.
 
 Exit gates: Proceed when lifecycle contract passes and local services remain healthy after rollback; escalate if the provisioning token lacks required permissions; stop if token storage cannot be mode 0600.
@@ -308,7 +319,7 @@ Phase metrics: Confidence 90%; long-term robustness 86%; internal interactions 5
   - command: `scripts/validate_public_runtime_contract.sh`
   - fixtures/mocks/data: committed deployment files
   - deterministic controls: exact grep assertions and no network access
-  - pass_criteria: every topology, secret, lifecycle, backup, docs, and CI assertion passes
+  - pass_criteria: every topology, secret, lifecycle, docs, CI, and no-backup assertions pass
   - expected_runtime: 30 seconds
 - id: TEST-110
   - name: Authenticated public gateway behavior
@@ -349,7 +360,7 @@ No manual check is an acceptance gate. A scoped Cloudflare API token with Zone R
 
 - Public env schema: `BIN_EVAL_PUBLIC_BEARER_TOKEN`, `BIN_EVAL_PUBLIC_GATEWAY_PORT`, `BIN_EVAL_PUBLIC_BACKEND_URL`, `BIN_EVAL_PUBLIC_HOSTNAME`, `BIN_EVAL_PUBLIC_URL`, `BIN_EVAL_CLOUDFLARED_TUNNEL_NAME`, `BIN_EVAL_CLOUDFLARED_ORIGIN`, `BIN_EVAL_CLOUDFLARED_LOG_LEVEL`, `BIN_EVAL_CLOUDFLARED_UID`, and `BIN_EVAL_CLOUDFLARED_GID`.
 - Invariants: token length is at least 64 hexadecimal characters; gateway/backend are loopback; public hostname is bin-eval.prls.co; public status is redacted.
-- Privacy/data quality constraints: Authorization and model content are absent from gateway logs; backup files are mode 0600 and checksum-addressed.
+- Privacy/data quality constraints: Authorization and model content are absent from gateway logs; Bin Eval does not create backup files.
 
 ## 9. Reproducibility
 
@@ -370,7 +381,6 @@ No manual check is an acceptance gate. A scoped Cloudflare API token with Zone R
 | P02 | REQ-057 | TEST-109 | scripts/validate_public_runtime_contract.sh | scripts/validate_public_runtime_contract.sh |
 | P03 | REQ-058 | TEST-008 | scripts/run_e2e.sh | scripts/run_e2e.sh |
 | P03 | REQ-059 | TEST-111 | scripts/test_public_ingress.sh | scripts/test_public_ingress.sh |
-| P02 | REQ-060 | TEST-109 | scripts/validate_public_runtime_contract.sh | scripts/validate_public_runtime_contract.sh |
 | P02 | REQ-061 | TEST-111 | scripts/test_public_ingress.sh | scripts/test_public_ingress.sh |
 
 ## 11. Execution log template
@@ -392,7 +402,7 @@ No manual check is an acceptance gate. A scoped Cloudflare API token with Zone R
 
 ## 13. Consistency check
 
-- REQ-052 through REQ-061 appear in the RTM.
+- REQ-052 through REQ-059 and REQ-061 appear in the RTM; REQ-060 is retired.
 - TEST-008, TEST-011, and TEST-109 through TEST-111 are defined.
 - Every behavior-changing subtask follows matching failing coverage.
 - Every subtask has an exact command and evidence result.

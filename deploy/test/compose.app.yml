@@ -1,0 +1,81 @@
+services:
+  garage:
+    profiles: ["test"]
+    image: dxflrs/garage:v2.3.0@sha256:866bd13ed2038ba7e7190e840482bc27234c4afaf77be8cfa439ae088c1e4690
+    command: ["/garage", "server", "--single-node", "--default-bucket"]
+    environment:
+      GARAGE_CONFIG_FILE: /etc/garage.toml
+      GARAGE_DEFAULT_ACCESS_KEY: ${BIN_EVAL_GARAGE_ACCESS_KEY}
+      GARAGE_DEFAULT_SECRET_KEY: ${BIN_EVAL_GARAGE_SECRET_KEY}
+      GARAGE_DEFAULT_BUCKET: ${BIN_EVAL_ARTIFACT_BUCKET}
+    ports:
+      - "127.0.0.1:${BIN_EVAL_TEST_GARAGE_PORT:-23900}:3900"
+    volumes:
+      - ../test/garage.toml:/etc/garage.toml:ro
+    tmpfs:
+      - /var/lib/garage/meta
+      - /var/lib/garage/data
+    healthcheck:
+      test: ["CMD", "/garage", "status"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    stop_grace_period: 10s
+
+  api:
+    profiles: ["app"]
+    build:
+      context: ../..
+      dockerfile: deploy/compose/Dockerfile
+    restart: on-failure:5
+    depends_on:
+      postgres:
+        condition: service_healthy
+      temporal:
+        condition: service_healthy
+      garage:
+        condition: service_healthy
+    environment: &bin_eval_app_environment
+      BIN_EVAL_ENV: ci
+      BIN_EVAL_DATABASE_URL: postgres://bin_eval:bin_eval@postgres:5432/bin_eval?sslmode=disable
+      BIN_EVAL_TEMPORAL_ADDRESS: temporal:7233
+      BIN_EVAL_TEMPORAL_TASK_QUEUE: bin-eval-ci
+      BIN_EVAL_GARAGE_ENDPOINT: http://garage:3900
+      BIN_EVAL_GARAGE_ACCESS_KEY: ${BIN_EVAL_GARAGE_ACCESS_KEY}
+      BIN_EVAL_GARAGE_SECRET_KEY: ${BIN_EVAL_GARAGE_SECRET_KEY}
+      BIN_EVAL_ARTIFACT_BUCKET: ${BIN_EVAL_ARTIFACT_BUCKET}
+      BIN_EVAL_LLM_BASE_URL: ${BIN_EVAL_LLM_BASE_URL}
+      BIN_EVAL_LLM_API_KEY: ${BIN_EVAL_LLM_API_KEY}
+      BIN_EVAL_MODEL_PROFILE: ${BIN_EVAL_MODEL_PROFILE:-gpt-5.4-mini}
+      BIN_EVAL_MAX_EVALUATION_RUNS: ${BIN_EVAL_MAX_EVALUATION_RUNS:-5}
+      BIN_EVAL_URL: http://api:8080
+      BIN_EVAL_LISTEN_ADDR: 0.0.0.0:8080
+      BIN_EVAL_ALLOW_PUBLIC_BIND: "true"
+      BIN_EVAL_GIT_SHA: ${BIN_EVAL_GIT_SHA:-local}
+    ports:
+      - "127.0.0.1:${BIN_EVAL_API_PORT:-18080}:8080"
+
+  worker:
+    profiles: ["app"]
+    build:
+      context: ../..
+      dockerfile: deploy/compose/Dockerfile
+    entrypoint: ["/bin-eval-worker"]
+    restart: on-failure:5
+    depends_on:
+      postgres:
+        condition: service_healthy
+      temporal:
+        condition: service_healthy
+      garage:
+        condition: service_healthy
+    environment: *bin_eval_app_environment
+
+  llm-fixture:
+    profiles: ["deterministic"]
+    build:
+      context: ../..
+      dockerfile: deploy/compose/Dockerfile
+    entrypoint: ["/bin-eval-llm-fixture"]
+    ports:
+      - "127.0.0.1:${BIN_EVAL_TEST_LLM_PORT:-24000}:4000"

@@ -12,26 +12,6 @@ USER_TEMPORAL_TASK_QUEUE="${BIN_EVAL_TEMPORAL_TASK_QUEUE:-}"
 mkdir -p "$DEBUG_DIR"
 find "$DEBUG_DIR" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
 
-configure_llm_defaults() {
-  if [[ "${BIN_EVAL_LLM_API_KEY:-}" == "replace-with-local-llm-key" && -n "${LITELLM_MASTER_KEY:-}" ]]; then
-    export BIN_EVAL_LLM_API_KEY="$LITELLM_MASTER_KEY"
-  fi
-  if [[ -n "${LITELLM_PORT:-}" && "${BIN_EVAL_LLM_BASE_URL:-}" == "http://127.0.0.1:4000" ]]; then
-    export BIN_EVAL_LLM_BASE_URL="http://127.0.0.1:${LITELLM_PORT}"
-  fi
-  if [[ "${BIN_EVAL_MODEL_PROFILE:-}" == "checklist-evaluator" ]]; then
-    local model
-    model="$(curl -fsS -H "Authorization: Bearer ${BIN_EVAL_LLM_API_KEY}" "${BIN_EVAL_LLM_BASE_URL}/v1/models" | jq -r 'if any(.data[]?; .id == "gpt-5.4-mini") then "gpt-5.4-mini" else (.data[0].id // empty) end')"
-    if [[ -n "$model" ]]; then
-      export BIN_EVAL_MODEL_PROFILE="$model"
-    fi
-  fi
-  if [[ -z "${BIN_EVAL_LLM_API_KEY:-}" || "${BIN_EVAL_LLM_API_KEY}" == "replace-with-local-llm-key" ]]; then
-    echo "BIN_EVAL_LLM_API_KEY must point to a schema-capable local LLM runtime" >&2
-    exit 1
-  fi
-}
-
 wait_for_tcp() {
   local host="$1"
   local port="$2"
@@ -52,6 +32,9 @@ cleanup() {
   if [[ -n "${WORKER_PID:-}" ]]; then
     kill "$WORKER_PID" >/dev/null 2>&1 || true
   fi
+  if [[ "${BIN_EVAL_COMPOSE_MODE:-local}" == "test" && "${BIN_EVAL_EXTERNAL_STACK:-false}" != "true" && "${BIN_EVAL_E2E_PARENT:-false}" != "true" ]]; then
+    scripts/docker-compose-local.sh down --volumes --remove-orphans >/dev/null 2>&1 || true
+  fi
 }
 trap cleanup EXIT
 
@@ -59,15 +42,31 @@ if [[ "${BIN_EVAL_EXTERNAL_STACK:-false}" == "true" ]]; then
   : "${BIN_EVAL_URL:?BIN_EVAL_URL is required for an external stack}"
 else
   bin_eval_load_env_file deploy/compose/.env.example false
-  configure_llm_defaults
+  export BIN_EVAL_COMPOSE_MODE=test
+  export BIN_EVAL_ENV_FILE="$ROOT_DIR/deploy/compose/.env.example"
+  export BIN_EVAL_TEST_PROJECT="${BIN_EVAL_TEST_PROJECT:-bin-eval-smoke-$$}"
+  export BIN_EVAL_TEST_POSTGRES_PORT="${BIN_EVAL_TEST_POSTGRES_PORT:-55433}"
+  export BIN_EVAL_TEST_TEMPORAL_PORT="${BIN_EVAL_TEST_TEMPORAL_PORT:-7234}"
+  export BIN_EVAL_TEST_GARAGE_PORT="${BIN_EVAL_TEST_GARAGE_PORT:-23900}"
+  export BIN_EVAL_TEST_LLM_PORT="${BIN_EVAL_TEST_LLM_PORT:-24000}"
+  export BIN_EVAL_POSTGRES_PORT="$BIN_EVAL_TEST_POSTGRES_PORT"
+  export BIN_EVAL_TEMPORAL_PORT="$BIN_EVAL_TEST_TEMPORAL_PORT"
+  export BIN_EVAL_GARAGE_ENDPOINT="http://127.0.0.1:${BIN_EVAL_TEST_GARAGE_PORT}"
+  export BIN_EVAL_DATABASE_URL="postgres://bin_eval:bin_eval@127.0.0.1:${BIN_EVAL_TEST_POSTGRES_PORT}/bin_eval?sslmode=disable"
+  export BIN_EVAL_TEMPORAL_ADDRESS="127.0.0.1:${BIN_EVAL_TEST_TEMPORAL_PORT}"
+  export BIN_EVAL_LLM_BASE_URL="http://127.0.0.1:${BIN_EVAL_TEST_LLM_PORT}"
+  export BIN_EVAL_LLM_API_KEY=deterministic-fixture
+  export BIN_EVAL_MODEL_PROFILE=deterministic-fixture
   export BIN_EVAL_LISTEN_ADDR="${USER_LISTEN_ADDR:-127.0.0.1:18080}"
   export BIN_EVAL_URL="http://${BIN_EVAL_LISTEN_ADDR}"
   export BIN_EVAL_TEMPORAL_TASK_QUEUE="${USER_TEMPORAL_TASK_QUEUE:-bin-eval-smoke-$$}"
 
-  docker compose --env-file deploy/compose/.env.example -f deploy/compose/docker-compose.yml config >/dev/null
-  docker compose --env-file deploy/compose/.env.example -f deploy/compose/docker-compose.yml up -d postgres temporal garage
-  wait_for_tcp 127.0.0.1 7233
-  wait_for_tcp 127.0.0.1 3900
+  scripts/docker-compose-local.sh config >/dev/null
+  scripts/docker-compose-local.sh --profile deterministic up -d postgres temporal garage llm-fixture
+  wait_for_tcp 127.0.0.1 "$BIN_EVAL_TEMPORAL_PORT"
+  scripts/wait-for-temporal.sh
+  wait_for_tcp 127.0.0.1 "$BIN_EVAL_TEST_GARAGE_PORT"
+  wait_for_tcp 127.0.0.1 "$BIN_EVAL_TEST_LLM_PORT"
 
   go build -o bin/bin-eval-api ./cmd/bin-eval-api
   go build -o bin/bin-eval-worker ./cmd/bin-eval-worker
@@ -78,8 +77,8 @@ else
   WORKER_PID="$!"
 fi
 export BIN_EVAL_GIT_SHA="${BIN_EVAL_GIT_SHA:-$(git rev-parse HEAD)}"
-export BIN_EVAL_ENDPOINT_CLASS="${BIN_EVAL_ENDPOINT_CLASS:-local-live}"
-export BIN_EVAL_FIXTURE_VERSION="${BIN_EVAL_FIXTURE_VERSION:-not-applicable}"
+export BIN_EVAL_ENDPOINT_CLASS="${BIN_EVAL_ENDPOINT_CLASS:-deterministic}"
+export BIN_EVAL_FIXTURE_VERSION="${BIN_EVAL_FIXTURE_VERSION:-v2}"
 bin_eval_wait_for_api "$BIN_EVAL_URL"
 
 good_rates=()

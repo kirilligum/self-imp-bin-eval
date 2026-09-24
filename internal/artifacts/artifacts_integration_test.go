@@ -112,7 +112,7 @@ func TestP06ExactLLMArtifacts(t *testing.T) {
 
 func newTestGarageWriter(t *testing.T) *GarageWriter {
 	t.Helper()
-	endpoint := getenvDefault("BIN_EVAL_GARAGE_ENDPOINT", "http://127.0.0.1:3900")
+	endpoint := getenvDefault("BIN_EVAL_GARAGE_ENDPOINT", "http://127.0.0.1:23900")
 	accessKey := getenvDefault("BIN_EVAL_GARAGE_ACCESS_KEY", "GK0123456789abcdef0123456789abcdef")
 	secretKey := getenvDefault("BIN_EVAL_GARAGE_SECRET_KEY", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
 	bucket := getenvDefault("BIN_EVAL_ARTIFACT_BUCKET", "bin-eval-artifacts")

@@ -91,7 +91,10 @@ func TestP06CIContract(t *testing.T) {
 	require.Contains(t, liveRuns, "--profile app")
 	require.NotContains(t, liveRuns, "--profile deterministic")
 	require.Contains(t, liveRuns, "docker-compose-local.sh port api 8080", "live CI must discover the dynamically allocated API port")
-	require.Contains(t, liveRuns, `BIN_EVAL_URL="http://127.0.0.1:${api_port}" make test-e2e`)
+	require.Contains(t, liveRuns, "docker-compose-local.sh port garage 3900", "live CI must discover the dynamically allocated Garage port for artifact capture")
+	require.Contains(t, liveRuns, `BIN_EVAL_URL="http://127.0.0.1:${api_port}"`)
+	require.Contains(t, liveRuns, `BIN_EVAL_GARAGE_ENDPOINT="http://127.0.0.1:${garage_port}"`)
+	require.Contains(t, liveRuns, "make test-e2e")
 
 	composePayload, err := os.ReadFile(filepath.Join(root, "deploy", "compose", "docker-compose.yml"))
 	require.NoError(t, err)

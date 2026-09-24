@@ -110,8 +110,12 @@ jobs:
           BIN_EVAL_GIT_SHA: ${{ github.sha }}
         run: |
           api_port="$(scripts/docker-compose-local.sh port api 8080 | awk -F: '{print $NF}')"
-          [[ "$api_port" =~ ^[0-9]+$ ]] && (( api_port > 0 && api_port <= 65535 ))
-          BIN_EVAL_URL="http://127.0.0.1:${api_port}" make test-e2e
+          garage_port="$(scripts/docker-compose-local.sh port garage 3900 | awk -F: '{print $NF}')"
+          for port in "$api_port" "$garage_port"; do
+            [[ "$port" =~ ^[0-9]+$ ]] && (( port > 0 && port <= 65535 ))
+          done
+          BIN_EVAL_URL="http://127.0.0.1:${api_port}" \
+            BIN_EVAL_GARAGE_ENDPOINT="http://127.0.0.1:${garage_port}" make test-e2e
       - name: Public ingress gate
         env:
           BIN_EVAL_PUBLIC_URL: ${{ vars.BIN_EVAL_PUBLIC_URL }}

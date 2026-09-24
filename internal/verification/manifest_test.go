@@ -202,6 +202,8 @@ func TestP07CanonicalCurlRunner(t *testing.T) {
 	runner := readRepositoryFile(t, root, "scripts/run_e2e.sh")
 	require.Contains(t, runner, "bin_eval_load_local_env \"$ROOT_DIR\"")
 	require.Contains(t, runner, "BIN_EVAL_LOAD_LOCAL_ENV")
+	require.Contains(t, runner, "BIN_EVAL_TEST_GARAGE_PORT is required for artifact capture")
+	require.Contains(t, runner, `BIN_EVAL_GARAGE_ENDPOINT="http://127.0.0.1:${BIN_EVAL_TEST_GARAGE_PORT}"`, "external-stack artifact capture must use the isolated Garage port")
 	require.Contains(t, runner, "BIN_EVAL_E2E_PARENT=true", "the runner must own temporary storage until artifact capture finishes")
 	require.Contains(t, runner, "trap cleanup_test_stack EXIT")
 	require.Contains(t, runner, "scripts/docker-compose-local.sh down --volumes --remove-orphans")

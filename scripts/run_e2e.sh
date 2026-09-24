@@ -40,6 +40,12 @@ if [[ "${BIN_EVAL_EXTERNAL_STACK:-false}" != "true" ]]; then
   export BIN_EVAL_FIXTURE_VERSION="${BIN_EVAL_FIXTURE_VERSION:-v2}"
   export BIN_EVAL_MODEL_PROFILE=deterministic-fixture
   export BIN_EVAL_E2E_PARENT=true
+else
+  : "${BIN_EVAL_URL:?BIN_EVAL_URL is required for an external stack}"
+  if [[ -z "${BIN_EVAL_GARAGE_ENDPOINT:-}" ]]; then
+    : "${BIN_EVAL_TEST_GARAGE_PORT:?BIN_EVAL_GARAGE_ENDPOINT or BIN_EVAL_TEST_GARAGE_PORT is required for artifact capture}"
+    export BIN_EVAL_GARAGE_ENDPOINT="http://127.0.0.1:${BIN_EVAL_TEST_GARAGE_PORT}"
+  fi
 fi
 
 DEBUG_DIR="${BIN_EVAL_DEBUG_DIR:-debug/smoke}"

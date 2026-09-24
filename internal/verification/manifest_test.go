@@ -17,7 +17,8 @@ func TestP06CIContract(t *testing.T) {
 	require.NoError(t, err)
 	var workflow struct {
 		Jobs map[string]struct {
-			If    string `yaml:"if"`
+			If    string            `yaml:"if"`
+			Env   map[string]string `yaml:"env"`
 			Steps []struct {
 				Uses            string            `yaml:"uses"`
 				Run             string            `yaml:"run"`
@@ -33,6 +34,10 @@ func TestP06CIContract(t *testing.T) {
 	require.True(t, ok, "missing live CI job")
 	require.Contains(t, live.If, "refs/heads/master")
 	require.Contains(t, live.If, "release")
+	require.Equal(t, "0", live.Env["BIN_EVAL_TEST_POSTGRES_PORT"], "live CI must not claim a fixed host port")
+	require.Equal(t, "0", live.Env["BIN_EVAL_TEST_TEMPORAL_PORT"], "live CI must not claim a fixed host port")
+	require.Equal(t, "0", live.Env["BIN_EVAL_TEST_GARAGE_PORT"], "live CI must not claim a fixed host port")
+	require.Equal(t, "0", live.Env["BIN_EVAL_API_PORT"], "live CI must not claim a fixed host port")
 	require.Contains(t, string(workflowPayload), "runs-on: [self-hosted, linux, x64, bin-eval-live]")
 	require.Contains(t, string(workflowPayload), "docker network connect --alias bin-eval-litellm")
 	require.Contains(t, string(workflowPayload), "Stop live test stack")
@@ -85,6 +90,8 @@ func TestP06CIContract(t *testing.T) {
 	require.Contains(t, deterministicRuns, "--profile app")
 	require.Contains(t, liveRuns, "--profile app")
 	require.NotContains(t, liveRuns, "--profile deterministic")
+	require.Contains(t, liveRuns, "docker-compose-local.sh port api 8080", "live CI must discover the dynamically allocated API port")
+	require.Contains(t, liveRuns, `BIN_EVAL_URL="http://127.0.0.1:${api_port}" make test-e2e`)
 
 	composePayload, err := os.ReadFile(filepath.Join(root, "deploy", "compose", "docker-compose.yml"))
 	require.NoError(t, err)

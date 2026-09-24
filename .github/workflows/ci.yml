@@ -70,10 +70,11 @@ jobs:
       BIN_EVAL_COMPOSE_MODE: test
       BIN_EVAL_ENV_FILE: deploy/compose/.env.example
       BIN_EVAL_TEST_PROJECT: bin-eval-live-${{ github.run_id }}
-      BIN_EVAL_TEST_POSTGRES_PORT: "55433"
-      BIN_EVAL_TEST_TEMPORAL_PORT: "7234"
-      BIN_EVAL_TEST_GARAGE_PORT: "23900"
-      BIN_EVAL_TEST_LLM_PORT: "24000"
+      BIN_EVAL_TEST_POSTGRES_PORT: "0"
+      BIN_EVAL_TEST_TEMPORAL_PORT: "0"
+      BIN_EVAL_TEST_GARAGE_PORT: "0"
+      BIN_EVAL_TEST_LLM_PORT: "0"
+      BIN_EVAL_API_PORT: "0"
     steps:
       - uses: actions/checkout@v7
       - name: Require live LLM configuration
@@ -103,12 +104,18 @@ jobs:
         env:
           BIN_EVAL_LLM_BASE_URL: ${{ secrets.BIN_EVAL_LLM_BASE_URL }}
           BIN_EVAL_EXTERNAL_STACK: "true"
-          BIN_EVAL_URL: http://127.0.0.1:18080
           BIN_EVAL_MODEL_PROFILE: ${{ vars.BIN_EVAL_MODEL_PROFILE || 'gpt-5.4-mini' }}
           BIN_EVAL_ENDPOINT_CLASS: live
           BIN_EVAL_FIXTURE_VERSION: not-applicable
           BIN_EVAL_GIT_SHA: ${{ github.sha }}
-        run: make test-e2e
+        run: |
+          api_port="$(scripts/docker-compose-local.sh port api 8080 | awk -F: '{print $NF}')"
+          garage_port="$(scripts/docker-compose-local.sh port garage 3900 | awk -F: '{print $NF}')"
+          for port in "$api_port" "$garage_port"; do
+            [[ "$port" =~ ^[0-9]+$ ]] && (( port > 0 && port <= 65535 ))
+          done
+          BIN_EVAL_URL="http://127.0.0.1:${api_port}" \
+            BIN_EVAL_GARAGE_ENDPOINT="http://127.0.0.1:${garage_port}" make test-e2e
       - name: Public ingress gate
         env:
           BIN_EVAL_PUBLIC_URL: ${{ vars.BIN_EVAL_PUBLIC_URL }}

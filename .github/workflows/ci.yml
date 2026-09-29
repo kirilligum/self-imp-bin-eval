@@ -97,14 +97,14 @@ jobs:
         env:
           BIN_EVAL_LLM_BASE_URL: ${{ secrets.BIN_EVAL_LLM_BASE_URL }}
           BIN_EVAL_LLM_API_KEY: ${{ secrets.BIN_EVAL_LLM_API_KEY }}
-          BIN_EVAL_MODEL_PROFILE: ${{ vars.BIN_EVAL_MODEL_PROFILE }}
+          BIN_EVAL_MODEL_PROFILE: ${{ vars.BIN_EVAL_MODEL_PROFILE || 'gpt-5.6-luna' }}
           BIN_EVAL_GIT_SHA: ${{ github.sha }}
         run: scripts/docker-compose-local.sh --profile app up -d --build
       - name: Curl live full-stack evaluation
         env:
           BIN_EVAL_LLM_BASE_URL: ${{ secrets.BIN_EVAL_LLM_BASE_URL }}
           BIN_EVAL_EXTERNAL_STACK: "true"
-          BIN_EVAL_MODEL_PROFILE: ${{ vars.BIN_EVAL_MODEL_PROFILE || 'gpt-5.4-mini' }}
+          BIN_EVAL_MODEL_PROFILE: ${{ vars.BIN_EVAL_MODEL_PROFILE || 'gpt-5.6-luna' }}
           BIN_EVAL_ENDPOINT_CLASS: live
           BIN_EVAL_FIXTURE_VERSION: not-applicable
           BIN_EVAL_GIT_SHA: ${{ github.sha }}
@@ -131,4 +131,39 @@ jobs:
           path: debug/
       - name: Stop live test stack
         if: always()
-        run: scripts/docker-compose-local.sh down --volumes --remove-orphans
+        env:
+          BIN_EVAL_LLM_CONTAINER: ${{ vars.BIN_EVAL_LLM_CONTAINER }}
+        run: |
+          expected_project="bin-eval-live-${GITHUB_RUN_ID}"
+          if [[ "${BIN_EVAL_COMPOSE_MODE:-}" != "test" || "${BIN_EVAL_TEST_PROJECT:-}" != "$expected_project" ]]; then
+            echo "Refusing to clean up a Compose project that is not scoped to this live run." >&2
+            exit 1
+          fi
+
+          network_list="$(docker network ls \
+            --filter "label=com.docker.compose.project=${BIN_EVAL_TEST_PROJECT}" \
+            --filter label=com.docker.compose.network=default \
+            --format '{{.Name}}')"
+          project_networks=()
+          if [[ -n "$network_list" ]]; then
+            mapfile -t project_networks <<< "$network_list"
+          fi
+
+          cleanup_status=0
+          if [[ -n "${BIN_EVAL_LLM_CONTAINER:-}" ]]; then
+            for network in "${project_networks[@]}"; do
+              if docker inspect "$BIN_EVAL_LLM_CONTAINER" --format '{{json .NetworkSettings.Networks}}' \
+                | jq -e --arg network "$network" 'has($network)' >/dev/null; then
+                docker network disconnect "$network" "$BIN_EVAL_LLM_CONTAINER" || cleanup_status=1
+              fi
+            done
+          fi
+
+          scripts/docker-compose-local.sh down --volumes --remove-orphans || cleanup_status=1
+          for network in "${project_networks[@]}"; do
+            if docker network inspect "$network" >/dev/null 2>&1; then
+              echo "Run-scoped test network remains after cleanup." >&2
+              cleanup_status=1
+            fi
+          done
+          exit "$cleanup_status"

@@ -38,7 +38,7 @@ done
 
 [[ -f deploy/local/bin-eval.env.example ]] || fail "missing deploy/local/bin-eval.env.example"
 grep -En '^BIN_EVAL_LISTEN_ADDR=127\.0\.0\.1:8080$' deploy/local/bin-eval.env.example >/dev/null || fail "local env example must bind to localhost"
-grep -En '^BIN_EVAL_MODEL_PROFILE=gpt-5\.4-mini$' deploy/local/bin-eval.env.example >/dev/null || fail "local env example must use gpt-5.4-mini"
+grep -En '^BIN_EVAL_MODEL_PROFILE=gpt-5\.6-luna$' deploy/local/bin-eval.env.example >/dev/null || fail "local env example must use gpt-5.6-luna"
 grep -En '^deploy/local/bin-eval\.env$' .gitignore >/dev/null || fail "deploy/local/bin-eval.env must be ignored"
 
 for anchor in "## Local Service Commands" "## Copy-Paste Curl Sequence" "## Live Curl Validation"; do

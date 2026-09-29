@@ -12,10 +12,7 @@ bin_eval_load_local_env "$ROOT_DIR"
 bin_eval_require_tools curl jq
 
 BASE_URL="${BIN_EVAL_LLM_BASE_URL:-http://127.0.0.1:4000}"
-MODEL="${BIN_EVAL_MODEL_PROFILE:-gpt-5.4-mini}"
-if [[ "$MODEL" == "checklist-evaluator" ]]; then
-  MODEL="gpt-5.4-mini"
-fi
+MODEL="${BIN_EVAL_MODEL_PROFILE:-gpt-5.6-luna}"
 API_KEY="${BIN_EVAL_LLM_API_KEY:-${LITELLM_MASTER_KEY:-}}"
 
 if [[ -z "$API_KEY" || "$API_KEY" == "replace-with-local-llm-key" ]]; then

@@ -24,6 +24,19 @@ jobs:
       BIN_EVAL_TEST_LLM_PORT: "24000"
     steps:
       - uses: actions/checkout@v7
+      - name: Prepare disk-backed Go temporary storage
+        run: |
+          go_tmp_dir="$RUNNER_TEMP/go-tmp"
+          mkdir -p "$go_tmp_dir"
+          filesystem_type="$(stat -f -c '%T' "$go_tmp_dir")"
+          case "$filesystem_type" in
+            tmpfs|ramfs)
+              printf 'RUNNER_TEMP must be disk-backed; got %s\n' "$filesystem_type" >&2
+              exit 1
+              ;;
+          esac
+          printf 'TMPDIR=%s\nGOTMPDIR=%s\n' "$go_tmp_dir" "$go_tmp_dir" >> "$GITHUB_ENV"
+          df -hT "$go_tmp_dir" /tmp
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
@@ -77,6 +90,19 @@ jobs:
       BIN_EVAL_API_PORT: "0"
     steps:
       - uses: actions/checkout@v7
+      - name: Prepare disk-backed Go temporary storage
+        run: |
+          go_tmp_dir="$RUNNER_TEMP/go-tmp"
+          mkdir -p "$go_tmp_dir"
+          filesystem_type="$(stat -f -c '%T' "$go_tmp_dir")"
+          case "$filesystem_type" in
+            tmpfs|ramfs)
+              printf 'RUNNER_TEMP must be disk-backed; got %s\n' "$filesystem_type" >&2
+              exit 1
+              ;;
+          esac
+          printf 'TMPDIR=%s\nGOTMPDIR=%s\n' "$go_tmp_dir" "$go_tmp_dir" >> "$GITHUB_ENV"
+          df -hT "$go_tmp_dir" /tmp
       - name: Require live LLM configuration
         env:
           BIN_EVAL_LLM_BASE_URL: ${{ secrets.BIN_EVAL_LLM_BASE_URL }}

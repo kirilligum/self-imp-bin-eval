@@ -15,17 +15,20 @@ func TestP06CIContract(t *testing.T) {
 	root := repositoryRoot(t)
 	workflowPayload, err := os.ReadFile(filepath.Join(root, ".github", "workflows", "ci.yml"))
 	require.NoError(t, err)
+	type ciStep struct {
+		Name            string            `yaml:"name"`
+		Uses            string            `yaml:"uses"`
+		Run             string            `yaml:"run"`
+		Env             map[string]string `yaml:"env"`
+		ContinueOnError bool              `yaml:"continue-on-error"`
+	}
+	type ciJob struct {
+		If    string            `yaml:"if"`
+		Env   map[string]string `yaml:"env"`
+		Steps []ciStep          `yaml:"steps"`
+	}
 	var workflow struct {
-		Jobs map[string]struct {
-			If    string            `yaml:"if"`
-			Env   map[string]string `yaml:"env"`
-			Steps []struct {
-				Uses            string            `yaml:"uses"`
-				Run             string            `yaml:"run"`
-				Env             map[string]string `yaml:"env"`
-				ContinueOnError bool              `yaml:"continue-on-error"`
-			} `yaml:"steps"`
-		} `yaml:"jobs"`
+		Jobs map[string]ciJob `yaml:"jobs"`
 	}
 	require.NoError(t, yaml.Unmarshal(workflowPayload, &workflow))
 	deterministic, ok := workflow.Jobs["deterministic"]
@@ -41,6 +44,30 @@ func TestP06CIContract(t *testing.T) {
 	require.Contains(t, string(workflowPayload), "runs-on: [self-hosted, linux, x64, bin-eval-live]")
 	require.Contains(t, string(workflowPayload), "docker network connect --alias bin-eval-litellm")
 	require.Contains(t, string(workflowPayload), "Stop live test stack")
+	for jobName, job := range map[string]ciJob{"deterministic": deterministic, "live": live} {
+		tempStepIndex := -1
+		validationStepName := "Static and unit gates"
+		if jobName == "live" {
+			validationStepName = "Curl live full-stack evaluation"
+		}
+		validationStepIndex := -1
+		for index, step := range job.Steps {
+			if step.Name == "Prepare disk-backed Go temporary storage" {
+				tempStepIndex = index
+				require.Contains(t, step.Run, "$RUNNER_TEMP/go-tmp")
+				require.Contains(t, step.Run, "TMPDIR=")
+				require.Contains(t, step.Run, "GOTMPDIR=")
+				require.Contains(t, step.Run, "tmpfs|ramfs")
+			}
+			if step.Name == validationStepName {
+				validationStepIndex = index
+			}
+		}
+		require.GreaterOrEqual(t, tempStepIndex, 0, "%s job must move Go scratch files off RAM-backed /tmp", jobName)
+		require.Greater(t, validationStepIndex, tempStepIndex, "%s job must prepare disk-backed storage before Go-based gates", jobName)
+	}
+	require.Contains(t, string(workflowPayload), "gpt-5.6-luna")
+	require.NotContains(t, string(workflowPayload), "gpt-5.4-mini", "live CI must not fall back to the retired profile")
 	actionCounts := make(map[string]int)
 	for _, job := range workflow.Jobs {
 		for _, step := range job.Steps {
@@ -59,12 +86,7 @@ func TestP06CIContract(t *testing.T) {
 	require.Contains(t, string(runnerInstaller), "ExecStart=/usr/bin/sg docker")
 	require.Contains(t, string(runnerInstaller), "KillMode=control-group")
 
-	assertCIJob := func(t *testing.T, steps []struct {
-		Uses            string            `yaml:"uses"`
-		Run             string            `yaml:"run"`
-		Env             map[string]string `yaml:"env"`
-		ContinueOnError bool              `yaml:"continue-on-error"`
-	}, endpointFragment string) string {
+	assertCIJob := func(t *testing.T, steps []ciStep, endpointFragment string) string {
 		t.Helper()
 		var allRuns strings.Builder
 		var endpointFound, externalStackFound bool
@@ -132,6 +154,14 @@ func TestP06CIContract(t *testing.T) {
 	require.Equal(t, []any{"test"}, testCompose.Services["garage"]["profiles"])
 	require.Contains(t, testCompose.Services["garage"], "tmpfs", "test Garage data must be ephemeral")
 	require.Equal(t, testCompose.Services["api"]["build"], testCompose.Services["worker"]["build"])
+	apiEnvironment, ok := testCompose.Services["api"]["environment"].(map[string]any)
+	require.True(t, ok, "test application environment must be explicit")
+	require.Equal(t, "${BIN_EVAL_MODEL_PROFILE:-gpt-5.6-luna}", apiEnvironment["BIN_EVAL_MODEL_PROFILE"])
+
+	localEnvExample, err := os.ReadFile(filepath.Join(root, "deploy", "local", "bin-eval.env.example"))
+	require.NoError(t, err)
+	require.Contains(t, string(localEnvExample), "BIN_EVAL_MODEL_PROFILE=gpt-5.6-luna")
+	require.NotContains(t, string(localEnvExample), "gpt-5.4-mini")
 
 	depsUnit, err := os.ReadFile(filepath.Join(root, "deploy", "systemd", "bin-eval-deps.service.in"))
 	require.NoError(t, err)

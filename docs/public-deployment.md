@@ -25,6 +25,29 @@ make stop-public
 
 `make stop-public` stops the Cloudflare connector and Nginx. It does not stop the API, worker, Postgres, Temporal, shared Garage, or LiteLLM. The DNS record remains provisioned, but there is no route to the loopback service while the connector is stopped.
 
+## Live CI runner
+
+The workflow's live-validation job uses the repository-scoped
+`bin-eval-live` self-hosted runner and runs on releases or pushes to `master`.
+`scripts/install-live-ci-runner.sh` installs or repairs its unit without
+enabling automatic startup; when the unit is already running, setup leaves its
+current state alone. This avoids idle runner memory use while preserving the
+registered runner and its credentials.
+
+Start the runner before publishing a release or pushing a change to `master`
+that needs live validation, then stop it after the job finishes:
+
+```sh
+systemctl --user start github-actions-self-imp-bin-eval.service
+systemctl --user status github-actions-self-imp-bin-eval.service
+# After the live job completes:
+systemctl --user stop github-actions-self-imp-bin-eval.service
+```
+
+The live job remains queued while this runner is offline. To keep it available
+continuously instead, explicitly run
+`systemctl --user enable --now github-actions-self-imp-bin-eval.service`.
+
 The API and worker use the shared Garage S3 endpoint at
 `http://127.0.0.1:3900`. Bin Eval provides no database, artifact, or Garage
 backup command; its persistent application data is intentionally disposable.

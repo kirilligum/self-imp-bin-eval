@@ -48,6 +48,13 @@ The live job remains queued while this runner is offline. To keep it available
 continuously instead, explicitly run
 `systemctl --user enable --now github-actions-self-imp-bin-eval.service`.
 
+Each live job uses the run-specific Compose project
+`bin-eval-live-<github-run-id>`. Its final cleanup disconnects the shared
+LiteLLM container from that temporary network, tears down the test stack and
+its ephemeral volumes, then verifies that the network was removed. Keep the
+repository variable `BIN_EVAL_MODEL_PROFILE` aligned with a model exposed by
+the shared LiteLLM service; the default is `gpt-5.6-luna`.
+
 The API and worker use the shared Garage S3 endpoint at
 `http://127.0.0.1:3900`. Bin Eval provides no database, artifact, or Garage
 backup command; its persistent application data is intentionally disposable.

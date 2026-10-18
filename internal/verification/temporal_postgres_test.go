@@ -23,6 +23,11 @@ func TestTemporalFixtureAndSharedPersistenceAreIsolated(t *testing.T) {
 			args := []string{"compose", "--env-file", "deploy/compose/.env.example", "-f", "deploy/compose/docker-compose.yml"}
 			if production {
 				args = append(args, "-f", "deploy/compose/compose.temporal-shared.yml")
+			} else {
+				args = append(args, "-f", "deploy/test/compose.app.yml")
+			}
+			if !production {
+				args = append(args, "--profile", "test", "--profile", "app", "--profile", "deterministic")
 			}
 			args = append(args, "config", "--format", "json")
 			cmd := exec.Command("docker", args...)
@@ -49,12 +54,14 @@ func TestTemporalFixtureAndSharedPersistenceAreIsolated(t *testing.T) {
 			require.NotContains(t, temporal.DependsOn, "postgres")
 			require.Contains(t, temporal.Networks, "default")
 			if production {
+				require.NotContains(t, model.Services, "postgres")
 				require.Equal(t, "postgres-shared", temporal.Environment["POSTGRES_SEEDS"])
 				require.Equal(t, "temporal", temporal.Environment["POSTGRES_USER"])
 				require.Equal(t, "true", temporal.Environment["SKIP_DB_CREATE"])
 				require.Equal(t, "true", temporal.Environment["SKIP_SCHEMA_SETUP"])
 				require.Contains(t, temporal.Networks, "agent-platform-control")
 			} else {
+				require.Contains(t, model.Services, "postgres")
 				require.Equal(t, "postgres", temporal.Environment["POSTGRES_SEEDS"])
 				require.Equal(t, "bin_eval", temporal.Environment["POSTGRES_USER"])
 				require.Equal(t, "false", temporal.Environment["SKIP_DB_CREATE"])

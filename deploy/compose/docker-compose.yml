@@ -1,20 +1,4 @@
 services:
-  postgres:
-    image: postgres:16.4
-    environment:
-      POSTGRES_USER: ${BIN_EVAL_POSTGRES_USER}
-      POSTGRES_PASSWORD: ${BIN_EVAL_POSTGRES_PASSWORD}
-      POSTGRES_DB: ${BIN_EVAL_POSTGRES_DB}
-    ports:
-      - "127.0.0.1:${BIN_EVAL_POSTGRES_PORT}:5432"
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${BIN_EVAL_POSTGRES_USER} -d ${BIN_EVAL_POSTGRES_DB}"]
-      interval: 2s
-      timeout: 2s
-      retries: 30
-    volumes:
-      - postgres-data:/var/lib/postgresql/data
-
   temporal:
     image: temporalio/auto-setup@sha256:d4cdc015d667ab5ccc3c6d1221a8792f4603c62378313db9391e47f0cb367305
     environment:
@@ -81,6 +65,3 @@ services:
       - ../local/bin-eval-cloudflared-token:/run/secrets/tunnel-token:ro
     labels:
       co.prls.service: bin-eval-public-tunnel
-
-volumes:
-  postgres-data:

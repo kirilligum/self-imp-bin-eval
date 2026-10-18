@@ -55,3 +55,18 @@ recovery certification. Exact receipts are owned by
 
 [Native auto-setup settings](https://github.com/temporalio/docker-builds/blob/main/docker-readme/auto-setup.md)
 and [existing-server guide](https://github.com/prls-co/postgres-shared/blob/main/docs/use-existing-postgres.md).
+
+## Shared application database, 2026-10-18
+
+Bin Eval also uses native `BIN_EVAL_DATABASE_URL` on shared PG17. Its own
+`bin_eval` database/login retains all application tables and rows; the login is
+ordinary rather than the old PG16 bootstrap superuser. Host clients use
+`127.0.0.1:55434`. The retained `55432` listener reaches the same server for
+existing CI clients; it is not a second writable database authority.
+
+The persistent base manifest and dependency systemd unit no longer own or start
+PostgreSQL. Only postgres-shared owns its lifecycle. Explicit isolated tests
+include deploy/test/compose.app.yml and receive a disposable pinned PG17 server
+on tmpfs. Application and Temporal fixture state remains separate from shared
+production databases. Preserve the existing production Compose project and
+include compose.temporal-shared.yml when operating its named Temporal service.

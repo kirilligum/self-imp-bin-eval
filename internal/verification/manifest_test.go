@@ -125,11 +125,11 @@ func TestP06CIContract(t *testing.T) {
 		Volumes  map[string]any            `yaml:"volumes"`
 	}
 	require.NoError(t, yaml.Unmarshal(composePayload, &compose))
-	for _, service := range []string{"postgres", "temporal", "public-gateway", "cloudflared"} {
+	for _, service := range []string{"temporal", "public-gateway", "cloudflared"} {
 		require.Contains(t, compose.Services, service)
 	}
 	require.Contains(t, compose.Services["temporal"], "healthcheck", "host and Compose clients must wait for Temporal readiness, not just an open TCP port")
-	for _, service := range []string{"garage", "api", "worker", "llm-fixture"} {
+	for _, service := range []string{"postgres", "garage", "api", "worker", "llm-fixture"} {
 		require.NotContains(t, compose.Services, service, "test-only service %s must not be in the persistent dependency Compose", service)
 	}
 	require.NotContains(t, compose.Volumes, "garage-meta")
@@ -141,7 +141,7 @@ func TestP06CIContract(t *testing.T) {
 		Services map[string]map[string]any `yaml:"services"`
 	}
 	require.NoError(t, yaml.Unmarshal(testComposePayload, &testCompose))
-	for _, service := range []string{"garage", "api", "worker", "llm-fixture"} {
+	for _, service := range []string{"postgres", "garage", "api", "worker", "llm-fixture"} {
 		require.Contains(t, testCompose.Services, service)
 	}
 	for _, service := range []string{"api", "worker"} {

@@ -16,16 +16,15 @@ services:
       - postgres-data:/var/lib/postgresql/data
 
   temporal:
-    image: temporalio/auto-setup:1.28.4
-    depends_on:
-      postgres:
-        condition: service_healthy
+    image: temporalio/auto-setup@sha256:d4cdc015d667ab5ccc3c6d1221a8792f4603c62378313db9391e47f0cb367305
     environment:
       DB: postgres12
       DB_PORT: 5432
-      POSTGRES_SEEDS: postgres
-      POSTGRES_USER: ${BIN_EVAL_POSTGRES_USER}
-      POSTGRES_PWD: ${BIN_EVAL_POSTGRES_PASSWORD}
+      POSTGRES_SEEDS: ${TEMPORAL_POSTGRES_HOST:?set existing Temporal database host}
+      POSTGRES_USER: ${TEMPORAL_POSTGRES_USER:?set Temporal database role}
+      POSTGRES_PWD: ${TEMPORAL_POSTGRES_PASSWORD:?set Temporal database password}
+      SKIP_DB_CREATE: ${TEMPORAL_SKIP_DB_CREATE:?set database provisioning policy}
+      SKIP_SCHEMA_SETUP: ${TEMPORAL_SKIP_SCHEMA_SETUP:?set schema provisioning policy}
       DBNAME: temporal
       VISIBILITY_DBNAME: temporal_visibility
       # The shared agent network reaches this existing Temporal container

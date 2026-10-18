@@ -98,3 +98,7 @@ make status-local
 ```
 
 Rollback is complete when `tunnel_active=false`, the gateway is stopped, and `make status-local` still reports active dependency, API, and worker services.
+
+Temporal uses the existing shared PG17 server through native configuration. See
+[Temporal database operations](temporal-postgres.md) for production/test manifests,
+backup and retained workflow acceptance.

@@ -1,0 +1,11 @@
+# Shaman-only attachment. Include explicitly for production Temporal operations.
+# Isolated test stacks use the base file and never join this existing network.
+services:
+  temporal:
+    networks:
+      - default
+      - agent-platform-control
+networks:
+  agent-platform-control:
+    external: true
+    name: prls-agent-platform-control
